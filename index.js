@@ -26,6 +26,7 @@ app.get('/api/health', (req, res) => {
 app.post('/api/toyyibpay/create-bill', async (req, res) => {
     try {
         console.log('Received request:', JSON.stringify(req.body, null, 2));
+        console.log('Request headers:', JSON.stringify(req.headers, null, 2));
         
         const { 
             amount, 
@@ -39,11 +40,30 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
             billDescription 
         } = req.body;
         
+        console.log('Extracted fields:', {
+            amount: amount,
+            driverId: driverId,
+            reference: reference,
+            amountType: typeof amount,
+            driverIdType: typeof driverId,
+            referenceType: typeof reference
+        });
+        
         // Validate required fields
         if (!amount || !driverId || !reference) {
+            console.error('Missing required fields:', {
+                amount: amount,
+                driverId: driverId,
+                reference: reference
+            });
             return res.status(400).json({
                 error: 'Missing required fields',
-                message: 'amount, driverId, and reference are required'
+                message: 'amount, driverId, and reference are required',
+                received: {
+                    amount: amount,
+                    driverId: driverId,
+                    reference: reference
+                }
             });
         }
         
