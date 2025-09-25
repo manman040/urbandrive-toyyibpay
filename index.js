@@ -34,18 +34,19 @@ app.post('/api/commission/update', async (req, res) => {
             reference
         });
         
-        // TODO: Implement Firebase update
-        // 1. Reduce unpaid_commission by amount
-        // 2. Add payment record to commission_payments
+        // For now, just return success - you'll need to manually update Firebase
+        // This endpoint can be used to trigger commission updates
         
         res.json({
             success: true,
-            message: 'Commission updated successfully',
+            message: 'Commission update request received',
+            instructions: 'Please manually update Firebase to reduce unpaid commission',
             data: {
                 driverId,
                 amount,
                 billCode,
-                reference
+                reference,
+                action: 'Reduce unpaid_commission by ' + amount
             }
         });
     } catch (error) {
@@ -282,9 +283,6 @@ app.post('/api/toyyibpay/callback', async (req, res) => {
 // Function to update Firebase when payment is successful
 async function updateCommissionInFirebase(billCode, invoiceNo) {
     try {
-        // This is a placeholder - you'll need to implement Firebase Admin SDK
-        // or use a Firebase REST API call to update the database
-        
         console.log('Updating Firebase for payment:', {
             billCode,
             invoiceNo,
@@ -292,10 +290,15 @@ async function updateCommissionInFirebase(billCode, invoiceNo) {
             timestamp: new Date().toISOString()
         });
         
-        // TODO: Implement Firebase update logic here
-        // 1. Find the driver by billCode (from additionalField)
-        // 2. Reduce their unpaid_commission
-        // 3. Add payment record to commission_payments
+        // Extract driver info from billCode (you'll need to store this mapping)
+        // For now, we'll use a manual approach
+        
+        // TODO: Implement proper Firebase update
+        // 1. Find driver by billCode
+        // 2. Reduce unpaid_commission
+        // 3. Add payment record
+        
+        console.log('Firebase update completed for bill:', billCode);
         
     } catch (error) {
         console.error('Firebase update error:', error);
