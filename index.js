@@ -40,7 +40,7 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
       billTo: billTo || driverId,
       billEmail: billEmail || `${driverId}@urbandrive.com`,
       billPhone: driverId, // optional, Toyyib accepts a string here
-      billName: billName || 'UrbanDrive Commission',
+      billName: billName || 'UrbanDrive Fee',
       billDescription: billDescription || `Commission for ${driverId}`,
       billPriceSetting: '1',
       billPayorInfo: '1',
