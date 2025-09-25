@@ -1,10 +1,12 @@
 {
   "name": "urbandrive-toyyibpay",
   "version": "1.0.0",
-  "description": "",
+  "description": "ToyyibPay backend for UrbanDrive commission payments",
   "main": "index.js",
   "type": "module",
   "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {
@@ -20,7 +22,7 @@
   "homepage": "https://github.com/manman040/urbandrive-toyyibpay#readme",
   "dependencies": {
     "cors": "^2.8.5",
-    "dotenv": "^17.2.2",
+    "dotenv": "^17.2.2", 
     "express": "^5.1.0",
     "node-fetch": "^3.3.2"
   }

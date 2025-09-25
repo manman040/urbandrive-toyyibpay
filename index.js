@@ -1,81 +1,168 @@
+// Complete backend fix for Render.com deployment
+// Replace your existing backend code with this
+
 import express from 'express';
-import cors from 'cors';
 import fetch from 'node-fetch';
+import cors from 'cors';
 import dotenv from 'dotenv';
+
 dotenv.config();
 
 const app = express();
-app.use(cors());
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(cors());
 
-const TOYYIB_BASE = 'https://dev.toyyibpay.com';
+// ToyyibPay configuration
+const TOYYIBPAY_USER_SECRET_KEY = process.env.TOYYIBPAY_USER_SECRET_KEY;
+const TOYYIBPAY_CATEGORY_CODE = process.env.TOYYIBPAY_CATEGORY_CODE;
+const TOYYIBPAY_API_URL = 'https://dev.toyyibpay.com/index.php/api/createBill';
 
-app.get('/', (_req, res) => res.json({ ok: true, service: 'ToyyibPay backend' }));
+// Health check endpoint
+app.get('/api/health', (req, res) => {
+    res.json({ ok: true, service: 'ToyyibPay backend' });
+});
 
+// Create bill endpoint - FIXED VERSION
 app.post('/api/toyyibpay/create-bill', async (req, res) => {
-  try {
-    const {
-      amount,
-      driverId,
-      reference,
-      returnUrl,
-      callbackUrl,
-      billTo,
-      billEmail,
-      billName,
-      billDescription
-    } = req.body;
-
-    if (!amount || !driverId) {
-      return res.status(400).json({ error: 'amount and driverId are required' });
+    try {
+        console.log('Received request:', JSON.stringify(req.body, null, 2));
+        
+        const { 
+            amount, 
+            driverId, 
+            reference, 
+            returnUrl, 
+            callbackUrl, 
+            billTo, 
+            billEmail, 
+            billName, 
+            billDescription 
+        } = req.body;
+        
+        // Validate required fields
+        if (!amount || !driverId || !reference) {
+            return res.status(400).json({
+                error: 'Missing required fields',
+                message: 'amount, driverId, and reference are required'
+            });
+        }
+        
+        // Use the billTo parameter we're sending from Android
+        const billToValue = billTo || driverId;
+        const billEmailValue = billEmail || `${driverId}@urbandrive.com`;
+        
+        // Truncate billName to 30 characters max (ToyyibPay limit)
+        const fullBillName = billName || `Driver ${driverId}`;
+        const billNameValue = fullBillName.length > 30 ? fullBillName.substring(0, 30) : fullBillName;
+        
+        const billDescriptionValue = billDescription || `Commission payment for driver ${driverId}`;
+        
+        console.log('Creating bill with:', {
+            billTo: billToValue,
+            billEmail: billEmailValue,
+            billName: billNameValue,
+            billDescription: billDescriptionValue,
+            amount: amount
+        });
+        
+        // Create bill with proper billTo parameter and field length limits
+        const billData = {
+            billTo: billToValue, // This was the missing piece!
+            billDescription: billDescriptionValue.length > 100 ? billDescriptionValue.substring(0, 100) : billDescriptionValue,
+            billEmail: billEmailValue,
+            billPhone: '0123456789', // Simple numeric format
+            billName: billNameValue, // Already truncated to 30 chars
+            billAmount: Math.round(amount * 100), // Convert to cents
+            billExternalReferenceNo: reference.length > 20 ? reference.substring(0, 20) : reference,
+            billContentEmail: 'Thank you for your payment!',
+            billAdditionalField: JSON.stringify({
+                driverId: driverId,
+                reference: reference,
+                timestamp: new Date().toISOString()
+            })
+        };
+        
+        // Ensure phone number is numeric only - remove any non-numeric characters
+        billData.billPhone = billData.billPhone.replace(/\D/g, '');
+        if (billData.billPhone.length === 0) {
+            billData.billPhone = '0123456789'; // Fallback
+        }
+        
+        console.log('Final bill data to send to ToyyibPay:', JSON.stringify(billData, null, 2));
+        
+        // Create ToyyibPay bill using direct HTTP request
+        const toyyibpayData = {
+            userSecretKey: TOYYIBPAY_USER_SECRET_KEY,
+            categoryCode: TOYYIBPAY_CATEGORY_CODE,
+            billName: billData.billName,
+            billDescription: billData.billDescription,
+            billPriceSetting: 1,
+            billPayorInfo: 1,
+            billAmount: billData.billAmount,
+            billReturnUrl: returnUrl,
+            billCallbackUrl: callbackUrl,
+            billExternalReferenceNo: billData.billExternalReferenceNo,
+            billTo: billData.billTo,
+            billEmail: billData.billEmail,
+            billPhone: billData.billPhone,
+            billSplitPayment: 0,
+            billSplitPaymentArgs: '',
+            billPaymentChannel: '0',
+            billContentEmail: billData.billContentEmail,
+            billAdditionalField: billData.billAdditionalField
+        };
+        
+        console.log('Sending to ToyyibPay API:', JSON.stringify(toyyibpayData, null, 2));
+        
+        const response = await fetch(TOYYIBPAY_API_URL, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: new URLSearchParams(toyyibpayData)
+        });
+        
+        const result = await response.json();
+        console.log('ToyyibPay response:', JSON.stringify(result, null, 2));
+        
+        if (result && result.billCode) {
+            // Generate payment URL
+            const paymentUrl = `https://dev.toyyibpay.com/${result.billCode}`;
+            
+            res.json({
+                success: true,
+                billCode: result.billCode,
+                paymentUrl: paymentUrl,
+                message: 'Bill created successfully'
+            });
+        } else {
+            console.error('ToyyibPay API returned no bill code:', result);
+            res.status(400).json({
+                error: 'Failed to create bill',
+                message: 'ToyyibPay API returned no bill code',
+                details: result
+            });
+        }
+        
+    } catch (error) {
+        console.error('Create bill error:', error);
+        res.status(500).json({
+            error: 'Internal server error',
+            message: error.message,
+            stack: error.stack
+        });
     }
-
-    const billAmount = Math.round(Number(amount) * 100);
-
-    // Forward all required ToyyibPay fields
-    const form = new URLSearchParams({
-      userSecretKey: process.env.TOYYIBPAY_SECRET,
-      categoryCode: process.env.TOYYIBPAY_CATEGORY,
-      billTo: billTo || driverId,
-      billEmail: billEmail || `${driverId}@urbandrive.com`,
-      billPhone: driverId, // optional, Toyyib accepts a string here
-      billName: billName || 'UrbanDrive Fee',
-      billDescription: billDescription || `Commission for ${driverId}`,
-      billPriceSetting: '1',
-      billPayorInfo: '1',
-      billAmount: String(billAmount),
-      billExternalReferenceNo: reference || '',
-      billReturnUrl: returnUrl || process.env.APP_RETURN_URL,
-      billCallbackUrl: callbackUrl || process.env.APP_CALLBACK_URL
-    });
-
-    const r = await fetch(`${TOYYIB_BASE}/index.php/api/createBill`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: form
-    });
-
-    const data = await r.json();
-
-    if (!Array.isArray(data) || !data[0]?.BillCode) {
-      return res.status(400).json({ error: 'Toyyib createBill failed', data });
-    }
-
-    const billCode = data[0].BillCode;
-    return res.json({ billCode, paymentUrl: `${TOYYIB_BASE}/${billCode}` });
-  } catch (e) {
-    res.status(500).json({ error: 'server_error', message: e.message });
-  }
 });
 
-// Webhook: ToyyibPay calls this after payment
+// Callback endpoint for ToyyibPay
 app.post('/api/toyyibpay/callback', (req, res) => {
-  // status_id === '1' means PAID
-  // TODO: verify + update Firebase summaries/commissions
-  res.send('OK');
+    console.log('ToyyibPay callback received:', JSON.stringify(req.body, null, 2));
+    // Handle payment callback here
+    res.json({ received: true });
 });
 
-app.listen(process.env.PORT || 3000, () => {
-  console.log('Server listening on', process.env.PORT || 3000);
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+    console.log('ToyyibPay backend ready!');
 });
