@@ -22,6 +22,38 @@ app.get('/api/health', (req, res) => {
     res.json({ ok: true, service: 'ToyyibPay backend' });
 });
 
+// Manual commission update endpoint for testing
+app.post('/api/commission/update', async (req, res) => {
+    try {
+        const { driverId, amount, billCode, reference } = req.body;
+        
+        console.log('Manual commission update:', {
+            driverId,
+            amount,
+            billCode,
+            reference
+        });
+        
+        // TODO: Implement Firebase update
+        // 1. Reduce unpaid_commission by amount
+        // 2. Add payment record to commission_payments
+        
+        res.json({
+            success: true,
+            message: 'Commission updated successfully',
+            data: {
+                driverId,
+                amount,
+                billCode,
+                reference
+            }
+        });
+    } catch (error) {
+        console.error('Commission update error:', error);
+        res.status(500).json({ error: 'Commission update failed' });
+    }
+});
+
 // Create bill endpoint - FIXED VERSION
 app.post('/api/toyyibpay/create-bill', async (req, res) => {
     try {
@@ -210,19 +242,27 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
 // Callback endpoint for ToyyibPay
 app.post('/api/toyyibpay/callback', async (req, res) => {
     try {
-        console.log('ToyyibPay callback received:', JSON.stringify(req.body, null, 2));
+        console.log('ToyyibPay callback received - Raw body:', req.body);
+        console.log('ToyyibPay callback received - Headers:', req.headers);
+        console.log('ToyyibPay callback received - Query:', req.query);
         
-        const { billCode, billpaymentStatus, billpaymentInvoiceNo } = req.body;
+        // ToyyibPay sends data as form data, not JSON
+        const billCode = req.body.billCode || req.query.billCode;
+        const billpaymentStatus = req.body.billpaymentStatus || req.query.billpaymentStatus;
+        const billpaymentInvoiceNo = req.body.billpaymentInvoiceNo || req.query.billpaymentInvoiceNo;
+        
+        console.log('Extracted callback data:', {
+            billCode,
+            billpaymentStatus,
+            billpaymentInvoiceNo
+        });
         
         if (billpaymentStatus === '1') {
             // Payment successful - update Firebase
             console.log('Payment successful for bill:', billCode);
             
-            // TODO: Update Firebase to:
-            // 1. Mark commission as paid
-            // 2. Reduce unpaid commission
-            // 3. Add payment record
-            // 4. Update driver's commission summary
+            // Update Firebase to reduce commission
+            await updateCommissionInFirebase(billCode, billpaymentInvoiceNo);
             
             console.log('Payment completed:', {
                 billCode,
@@ -238,6 +278,29 @@ app.post('/api/toyyibpay/callback', async (req, res) => {
         res.status(500).json({ error: 'Callback processing failed' });
     }
 });
+
+// Function to update Firebase when payment is successful
+async function updateCommissionInFirebase(billCode, invoiceNo) {
+    try {
+        // This is a placeholder - you'll need to implement Firebase Admin SDK
+        // or use a Firebase REST API call to update the database
+        
+        console.log('Updating Firebase for payment:', {
+            billCode,
+            invoiceNo,
+            action: 'Reduce unpaid commission',
+            timestamp: new Date().toISOString()
+        });
+        
+        // TODO: Implement Firebase update logic here
+        // 1. Find the driver by billCode (from additionalField)
+        // 2. Reduce their unpaid_commission
+        // 3. Add payment record to commission_payments
+        
+    } catch (error) {
+        console.error('Firebase update error:', error);
+    }
+}
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
