@@ -208,10 +208,35 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
 });
 
 // Callback endpoint for ToyyibPay
-app.post('/api/toyyibpay/callback', (req, res) => {
-    console.log('ToyyibPay callback received:', JSON.stringify(req.body, null, 2));
-    // Handle payment callback here
-    res.json({ received: true });
+app.post('/api/toyyibpay/callback', async (req, res) => {
+    try {
+        console.log('ToyyibPay callback received:', JSON.stringify(req.body, null, 2));
+        
+        const { billCode, billpaymentStatus, billpaymentInvoiceNo } = req.body;
+        
+        if (billpaymentStatus === '1') {
+            // Payment successful - update Firebase
+            console.log('Payment successful for bill:', billCode);
+            
+            // TODO: Update Firebase to:
+            // 1. Mark commission as paid
+            // 2. Reduce unpaid commission
+            // 3. Add payment record
+            // 4. Update driver's commission summary
+            
+            console.log('Payment completed:', {
+                billCode,
+                invoiceNo: billpaymentInvoiceNo,
+                status: 'paid',
+                action: 'Commission payment received from driver'
+            });
+        }
+        
+        res.json({ received: true });
+    } catch (error) {
+        console.error('Callback error:', error);
+        res.status(500).json({ error: 'Callback processing failed' });
+    }
 });
 
 const PORT = process.env.PORT || 3000;
