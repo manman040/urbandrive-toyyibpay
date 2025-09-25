@@ -156,8 +156,22 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
         
         console.log('ToyyibPay parsed response:', JSON.stringify(result, null, 2));
         
-        if (result && result.billCode) {
-            // Generate payment URL
+        // Handle ToyyibPay response format
+        if (Array.isArray(result) && result.length > 0 && result[0].BillCode) {
+            // ToyyibPay returns array format: [{"BillCode":"rp0fcxj8"}]
+            const billCode = result[0].BillCode;
+            const paymentUrl = `https://dev.toyyibpay.com/${billCode}`;
+            
+            console.log('Bill created successfully:', { billCode, paymentUrl });
+            
+            res.json({
+                success: true,
+                billCode: billCode,
+                paymentUrl: paymentUrl,
+                message: 'Bill created successfully'
+            });
+        } else if (result && result.billCode) {
+            // Alternative format: {"billCode":"rp0fcxj8"}
             const paymentUrl = `https://dev.toyyibpay.com/${result.billCode}`;
             
             res.json({
