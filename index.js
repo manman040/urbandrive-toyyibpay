@@ -50,7 +50,7 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
         });
         
         // Validate required fields
-        if (!amount || !driverId || !reference) {
+        if (!amount || !driverId || !reference || reference.trim() === '') {
             console.error('Missing required fields:', {
                 amount: amount,
                 driverId: driverId,
