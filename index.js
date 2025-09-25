@@ -122,8 +122,19 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
             body: new URLSearchParams(toyyibpayData)
         });
         
-        const result = await response.json();
-        console.log('ToyyibPay response:', JSON.stringify(result, null, 2));
+        const responseText = await response.text();
+        console.log('ToyyibPay raw response:', responseText);
+        
+        let result;
+        try {
+            result = JSON.parse(responseText);
+        } catch (parseError) {
+            console.error('Failed to parse ToyyibPay response as JSON:', parseError);
+            console.error('Response was:', responseText);
+            throw new Error(`ToyyibPay API returned invalid JSON: ${responseText.substring(0, 100)}...`);
+        }
+        
+        console.log('ToyyibPay parsed response:', JSON.stringify(result, null, 2));
         
         if (result && result.billCode) {
             // Generate payment URL
@@ -135,11 +146,19 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
                 paymentUrl: paymentUrl,
                 message: 'Bill created successfully'
             });
+        } else if (result && result.error) {
+            // ToyyibPay returned an error
+            console.error('ToyyibPay API error:', result);
+            res.status(400).json({
+                error: 'ToyyibPay API error',
+                message: result.error,
+                details: result
+            });
         } else {
-            console.error('ToyyibPay API returned no bill code:', result);
+            console.error('ToyyibPay API returned unexpected response:', result);
             res.status(400).json({
                 error: 'Failed to create bill',
-                message: 'ToyyibPay API returned no bill code',
+                message: 'ToyyibPay API returned unexpected response',
                 details: result
             });
         }
