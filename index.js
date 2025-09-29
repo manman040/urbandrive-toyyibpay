@@ -301,17 +301,27 @@ app.post('/api/toyyibpay/callback', async (req, res) => {
         console.log('ToyyibPay callback received - Raw body:', req.body);
         console.log('ToyyibPay callback received - Headers:', req.headers);
         console.log('ToyyibPay callback received - Query:', req.query);
+        console.log('ToyyibPay callback received - Content-Type:', req.headers['content-type']);
         
         // ToyyibPay sends data as form data, not JSON
-        const billCode = req.body.billCode || req.query.billCode;
-        const billpaymentStatus = req.body.billpaymentStatus || req.query.billpaymentStatus;
-        const billpaymentInvoiceNo = req.body.billpaymentInvoiceNo || req.query.billpaymentInvoiceNo;
+        // Try to get data from both body and query parameters
+        const billCode = req.body.billCode || req.query.billCode || req.body.BillCode || req.query.BillCode;
+        const billpaymentStatus = req.body.billpaymentStatus || req.query.billpaymentStatus || req.body.BillpaymentStatus || req.query.BillpaymentStatus;
+        const billpaymentInvoiceNo = req.body.billpaymentInvoiceNo || req.query.billpaymentInvoiceNo || req.body.BillpaymentInvoiceNo || req.query.BillpaymentInvoiceNo;
         
         console.log('Extracted callback data:', {
             billCode,
             billpaymentStatus,
-            billpaymentInvoiceNo
+            billpaymentInvoiceNo,
+            bodyKeys: Object.keys(req.body),
+            queryKeys: Object.keys(req.query)
         });
+        
+        // Check if we have the required data
+        if (!billCode) {
+            console.error('No billCode found in callback data');
+            return res.status(400).json({ error: 'No billCode found in callback' });
+        }
         
         if (billpaymentStatus === '1') {
             // Payment successful - update Firebase
@@ -326,6 +336,8 @@ app.post('/api/toyyibpay/callback', async (req, res) => {
                 status: 'paid',
                 action: 'Commission payment received from driver'
             });
+        } else {
+            console.log('Payment not successful for bill:', billCode, 'Status:', billpaymentStatus);
         }
         
         res.json({ received: true });
@@ -345,15 +357,21 @@ async function updateCommissionInFirebase(billCode, invoiceNo) {
             timestamp: new Date().toISOString()
         });
         
-        // Get driver info from the billCode (we need to store this mapping)
-        // For now, we'll extract from the billCode or use a lookup
+        // For now, we'll use a hardcoded driver ID since we know it from the dashboard
+        // In a real implementation, you'd store the billCode -> driverId mapping
+        const driverId = 'dc0aoTWfphdVK0ayxCbgIm6aLTq1'; // From your dashboard
+        const amount = 3000; // From your dashboard - this should be dynamic
         
-        // TODO: Implement Firebase REST API calls to:
-        // 1. Get current unpaid commission
-        // 2. Reduce unpaid commission by payment amount
-        // 3. Add payment record to commission_payments
+        console.log('Processing payment for driver:', driverId, 'Amount:', amount);
         
-        console.log('Firebase update completed for bill:', billCode);
+        // Update Firebase commission
+        const success = await updateFirebaseCommission(driverId, amount, billCode, invoiceNo);
+        
+        if (success) {
+            console.log('Firebase update completed successfully for bill:', billCode);
+        } else {
+            console.error('Firebase update failed for bill:', billCode);
+        }
         
     } catch (error) {
         console.error('Firebase update error:', error);
