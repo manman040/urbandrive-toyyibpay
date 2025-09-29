@@ -19,7 +19,7 @@ app.use(cors());
 // ToyyibPay configuration
 const TOYYIBPAY_USER_SECRET_KEY = process.env.TOYYIBPAY_USER_SECRET_KEY;
 const TOYYIBPAY_CATEGORY_CODE = process.env.TOYYIBPAY_CATEGORY_CODE;
-const TOYYIBPAY_API_URL = 'https://toyyibpay.com/index.php/api/createBill';
+const TOYYIBPAY_API_URL = 'https://dev.toyyibpay.com/index.php/api/createBill';
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
@@ -248,7 +248,7 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
         if (Array.isArray(result) && result.length > 0 && result[0].BillCode) {
             // ToyyibPay returns array format: [{"BillCode":"rp0fcxj8"}]
             const billCode = result[0].BillCode;
-            const paymentUrl = `https://toyyibpay.com/${billCode}`;
+            const paymentUrl = `https://dev.toyyibpay.com/${billCode}`;
             
             console.log('Bill created successfully:', { billCode, paymentUrl });
             
@@ -260,7 +260,7 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
             });
         } else if (result && result.billCode) {
             // Alternative format: {"billCode":"rp0fcxj8"}
-            const paymentUrl = `https://toyyibpay.com/${result.billCode}`;
+            const paymentUrl = `https://dev.toyyibpay.com/${result.billCode}`;
             
             res.json({
                 success: true,
