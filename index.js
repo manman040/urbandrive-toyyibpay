@@ -176,6 +176,11 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
         };
         
         console.log('Sending to ToyyibPay API:', JSON.stringify(toyyibpayData, null, 2));
+        console.log('ToyyibPay credentials check:', {
+            userSecretKey: TOYYIBPAY_USER_SECRET_KEY ? `${TOYYIBPAY_USER_SECRET_KEY.substring(0, 8)}...` : 'MISSING',
+            categoryCode: TOYYIBPAY_CATEGORY_CODE ? `${TOYYIBPAY_CATEGORY_CODE.substring(0, 8)}...` : 'MISSING',
+            apiUrl: TOYYIBPAY_API_URL
+        });
         
         // Try the ToyyibPay API with proper error handling
         let response;
@@ -206,12 +211,34 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
             throw new Error(`ToyyibPay API returned HTML error page. Check your credentials and API endpoint. Response: ${responseText.substring(0, 200)}...`);
         }
         
+        // Check for ToyyibPay error messages in plain text
+        if (responseText.includes('[KEY-DID-NOT-EXIST]')) {
+            console.error('ToyyibPay API error: Invalid credentials');
+            throw new Error('ToyyibPay API error: Invalid userSecretKey or categoryCode. Please check your ToyyibPay credentials.');
+        }
+        
+        if (responseText.includes('[USER-IS-NOT-ACTIVE]')) {
+            console.error('ToyyibPay API error: User account not active');
+            throw new Error('ToyyibPay API error: User account is not active. Please contact ToyyibPay support.');
+        }
+        
+        if (responseText.includes('[CATEGORY-NOT-EXIST]')) {
+            console.error('ToyyibPay API error: Invalid category code');
+            throw new Error('ToyyibPay API error: Invalid categoryCode. Please check your ToyyibPay category code.');
+        }
+        
         let result;
         try {
             result = JSON.parse(responseText);
         } catch (parseError) {
             console.error('Failed to parse ToyyibPay response as JSON:', parseError);
             console.error('Response was:', responseText);
+            
+            // Check if it's a known ToyyibPay error format
+            if (responseText.includes('[') && responseText.includes(']')) {
+                throw new Error(`ToyyibPay API error: ${responseText.trim()}`);
+            }
+            
             throw new Error(`ToyyibPay API returned invalid JSON: ${responseText.substring(0, 100)}...`);
         }
         
