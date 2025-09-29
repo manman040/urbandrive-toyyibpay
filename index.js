@@ -5,6 +5,7 @@ import express from 'express';
 import fetch from 'node-fetch';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import multer from 'multer';
 
 dotenv.config();
 
@@ -14,7 +15,11 @@ const FIREBASE_DATABASE_URL = process.env.FIREBASE_DATABASE_URL;
 
 const app = express();
 app.use(express.json());
+app.use(express.urlencoded({ extended: true })); // For form data
 app.use(cors());
+
+// Configure multer for multipart/form-data
+const upload = multer();
 
 // ToyyibPay configuration
 const TOYYIBPAY_USER_SECRET_KEY = process.env.TOYYIBPAY_USER_SECRET_KEY;
@@ -296,18 +301,18 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
 });
 
 // Callback endpoint for ToyyibPay
-app.post('/api/toyyibpay/callback', async (req, res) => {
+app.post('/api/toyyibpay/callback', upload.none(), async (req, res) => {
     try {
         console.log('ToyyibPay callback received - Raw body:', req.body);
         console.log('ToyyibPay callback received - Headers:', req.headers);
         console.log('ToyyibPay callback received - Query:', req.query);
         console.log('ToyyibPay callback received - Content-Type:', req.headers['content-type']);
         
-        // ToyyibPay sends data as form data, not JSON
-        // Try to get data from both body and query parameters
-        const billCode = req.body.billCode || req.query.billCode || req.body.BillCode || req.query.BillCode;
-        const billpaymentStatus = req.body.billpaymentStatus || req.query.billpaymentStatus || req.body.BillpaymentStatus || req.query.BillpaymentStatus;
-        const billpaymentInvoiceNo = req.body.billpaymentInvoiceNo || req.query.billpaymentInvoiceNo || req.body.BillpaymentInvoiceNo || req.query.BillpaymentInvoiceNo;
+        // ToyyibPay sends data as multipart/form-data
+        // Try to get data from both body and query parameters with various field name formats
+        const billCode = req.body.billCode || req.query.billCode || req.body.BillCode || req.query.BillCode || req.body.bill_code || req.query.bill_code;
+        const billpaymentStatus = req.body.billpaymentStatus || req.query.billpaymentStatus || req.body.BillpaymentStatus || req.query.BillpaymentStatus || req.body.bill_payment_status || req.query.bill_payment_status;
+        const billpaymentInvoiceNo = req.body.billpaymentInvoiceNo || req.query.billpaymentInvoiceNo || req.body.BillpaymentInvoiceNo || req.query.BillpaymentInvoiceNo || req.body.bill_payment_invoice_no || req.query.bill_payment_invoice_no;
         
         console.log('Extracted callback data:', {
             billCode,
