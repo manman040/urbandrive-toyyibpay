@@ -19,7 +19,7 @@ app.use(cors());
 // ToyyibPay configuration
 const TOYYIBPAY_USER_SECRET_KEY = process.env.TOYYIBPAY_USER_SECRET_KEY;
 const TOYYIBPAY_CATEGORY_CODE = process.env.TOYYIBPAY_CATEGORY_CODE;
-const TOYYIBPAY_API_URL = 'https://dev.toyyibpay.com/index.php/api/createBill';
+const TOYYIBPAY_API_URL = 'https://toyyibpay.com/index.php/api/createBill';
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
@@ -177,16 +177,34 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
         
         console.log('Sending to ToyyibPay API:', JSON.stringify(toyyibpayData, null, 2));
         
-        const response = await fetch(TOYYIBPAY_API_URL, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded',
-            },
-            body: new URLSearchParams(toyyibpayData)
-        });
+        // Try the ToyyibPay API with proper error handling
+        let response;
+        let responseText;
         
-        const responseText = await response.text();
-        console.log('ToyyibPay raw response:', responseText);
+        try {
+            response = await fetch(TOYYIBPAY_API_URL, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: new URLSearchParams(toyyibpayData)
+            });
+            
+            responseText = await response.text();
+            console.log('ToyyibPay raw response:', responseText);
+            console.log('ToyyibPay response status:', response.status);
+            console.log('ToyyibPay response headers:', response.headers);
+            
+        } catch (fetchError) {
+            console.error('Fetch error:', fetchError);
+            throw new Error(`Failed to connect to ToyyibPay API: ${fetchError.message}`);
+        }
+        
+        // Check if response is HTML (error page)
+        if (responseText.includes('<!DOCTYPE html>') || responseText.includes('<html')) {
+            console.error('ToyyibPay returned HTML error page:', responseText.substring(0, 500));
+            throw new Error(`ToyyibPay API returned HTML error page. Check your credentials and API endpoint. Response: ${responseText.substring(0, 200)}...`);
+        }
         
         let result;
         try {
@@ -203,7 +221,7 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
         if (Array.isArray(result) && result.length > 0 && result[0].BillCode) {
             // ToyyibPay returns array format: [{"BillCode":"rp0fcxj8"}]
             const billCode = result[0].BillCode;
-            const paymentUrl = `https://dev.toyyibpay.com/${billCode}`;
+            const paymentUrl = `https://toyyibpay.com/${billCode}`;
             
             console.log('Bill created successfully:', { billCode, paymentUrl });
             
@@ -215,7 +233,7 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
             });
         } else if (result && result.billCode) {
             // Alternative format: {"billCode":"rp0fcxj8"}
-            const paymentUrl = `https://dev.toyyibpay.com/${result.billCode}`;
+            const paymentUrl = `https://toyyibpay.com/${result.billCode}`;
             
             res.json({
                 success: true,
