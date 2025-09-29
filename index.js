@@ -8,6 +8,10 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
+// Firebase configuration
+const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID;
+const FIREBASE_DATABASE_URL = process.env.FIREBASE_DATABASE_URL;
+
 const app = express();
 app.use(express.json());
 app.use(cors());
@@ -34,21 +38,27 @@ app.post('/api/commission/update', async (req, res) => {
             reference
         });
         
-        // For now, just return success - you'll need to manually update Firebase
-        // This endpoint can be used to trigger commission updates
+        // Update Firebase automatically
+        const success = await updateFirebaseCommission(driverId, amount, billCode, reference);
         
-        res.json({
-            success: true,
-            message: 'Commission update request received',
-            instructions: 'Please manually update Firebase to reduce unpaid commission',
-            data: {
-                driverId,
-                amount,
-                billCode,
-                reference,
-                action: 'Reduce unpaid_commission by ' + amount
-            }
-        });
+        if (success) {
+            res.json({
+                success: true,
+                message: 'Commission updated successfully in Firebase',
+                data: {
+                    driverId,
+                    amount,
+                    billCode,
+                    reference,
+                    action: 'Reduced unpaid_commission by ' + amount
+                }
+            });
+        } else {
+            res.status(500).json({
+                error: 'Failed to update Firebase',
+                message: 'Commission update failed'
+            });
+        }
     } catch (error) {
         console.error('Commission update error:', error);
         res.status(500).json({ error: 'Commission update failed' });
@@ -290,18 +300,100 @@ async function updateCommissionInFirebase(billCode, invoiceNo) {
             timestamp: new Date().toISOString()
         });
         
-        // Extract driver info from billCode (you'll need to store this mapping)
-        // For now, we'll use a manual approach
+        // Get driver info from the billCode (we need to store this mapping)
+        // For now, we'll extract from the billCode or use a lookup
         
-        // TODO: Implement proper Firebase update
-        // 1. Find driver by billCode
-        // 2. Reduce unpaid_commission
-        // 3. Add payment record
+        // TODO: Implement Firebase REST API calls to:
+        // 1. Get current unpaid commission
+        // 2. Reduce unpaid commission by payment amount
+        // 3. Add payment record to commission_payments
         
         console.log('Firebase update completed for bill:', billCode);
         
     } catch (error) {
         console.error('Firebase update error:', error);
+    }
+}
+
+// Function to update Firebase commission via REST API
+async function updateFirebaseCommission(driverId, amount, billCode, reference) {
+    try {
+        const firebaseUrl = `${FIREBASE_DATABASE_URL}/driver_commissions/${driverId}/commission_summary.json`;
+        
+        // Get current commission data
+        const getResponse = await fetch(firebaseUrl);
+        const currentData = await getResponse.json();
+        
+        if (currentData) {
+            const currentUnpaid = currentData.unpaid_commission || 0;
+            const newUnpaid = Math.max(0, currentUnpaid - amount);
+            
+            // Update unpaid commission
+            const updateData = {
+                unpaid_commission: newUnpaid
+            };
+            
+            const updateResponse = await fetch(firebaseUrl, {
+                method: 'PATCH',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(updateData)
+            });
+            
+            if (updateResponse.ok) {
+                console.log('Commission updated successfully:', {
+                    driverId,
+                    oldUnpaid: currentUnpaid,
+                    newUnpaid: newUnpaid,
+                    amountPaid: amount
+                });
+                
+                // Add payment record
+                await addPaymentRecord(driverId, amount, billCode, reference);
+                
+                return true;
+            }
+        }
+        
+        return false;
+    } catch (error) {
+        console.error('Firebase update error:', error);
+        return false;
+    }
+}
+
+// Function to add payment record to Firebase
+async function addPaymentRecord(driverId, amount, billCode, reference) {
+    try {
+        const paymentData = {
+            amount: amount,
+            billCode: billCode,
+            reference: reference,
+            status: 'paid',
+            timestamp: new Date().toISOString(),
+            paymentMethod: 'ToyyibPay'
+        };
+        
+        const paymentUrl = `${FIREBASE_DATABASE_URL}/commission_payments/${driverId}.json`;
+        
+        const response = await fetch(paymentUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(paymentData)
+        });
+        
+        if (response.ok) {
+            console.log('Payment record added successfully:', paymentData);
+            return true;
+        }
+        
+        return false;
+    } catch (error) {
+        console.error('Payment record error:', error);
+        return false;
     }
 }
 
