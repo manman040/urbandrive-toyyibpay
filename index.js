@@ -5,7 +5,6 @@ import express from 'express';
 import fetch from 'node-fetch';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import multer from 'multer';
 
 dotenv.config();
 
@@ -18,8 +17,43 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true })); // For form data
 app.use(cors());
 
-// Configure multer for multipart/form-data
-const upload = multer();
+// Custom middleware to handle multipart/form-data
+app.use('/api/toyyibpay/callback', (req, res, next) => {
+    if (req.headers['content-type'] && req.headers['content-type'].includes('multipart/form-data')) {
+        let body = '';
+        req.on('data', chunk => {
+            body += chunk.toString();
+        });
+        req.on('end', () => {
+            // Parse multipart form data manually
+            const boundary = req.headers['content-type'].split('boundary=')[1];
+            const parts = body.split('--' + boundary);
+            
+            const formData = {};
+            parts.forEach(part => {
+                if (part.includes('Content-Disposition: form-data')) {
+                    const lines = part.split('\r\n');
+                    const disposition = lines.find(line => line.includes('Content-Disposition: form-data'));
+                    if (disposition) {
+                        const nameMatch = disposition.match(/name="([^"]+)"/);
+                        if (nameMatch) {
+                            const name = nameMatch[1];
+                            const value = lines[lines.length - 2]; // Value is usually second to last line
+                            if (value && value.trim()) {
+                                formData[name] = value.trim();
+                            }
+                        }
+                    }
+                }
+            });
+            
+            req.body = formData;
+            next();
+        });
+    } else {
+        next();
+    }
+});
 
 // ToyyibPay configuration
 const TOYYIBPAY_USER_SECRET_KEY = process.env.TOYYIBPAY_USER_SECRET_KEY;
@@ -115,15 +149,13 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
             });
         }
         
-        // Use the billTo parameter we're sending from Android
+        // Use the billTo parameter we're sending from Android (now contains real driver name)
         const billToValue = billTo || driverId;
         const billEmailValue = billEmail || `${driverId}@urbandrive.com`;
         
-        // Truncate billName to 30 characters max (ToyyibPay limit)
-        const fullBillName = billName || `Driver ${driverId}`;
-        const billNameValue = fullBillName.length > 30 ? fullBillName.substring(0, 30) : fullBillName;
-        
-        const billDescriptionValue = billDescription || `Commission payment for driver ${driverId}`;
+        // Use the fixed bill name and description from Android
+        const billNameValue = billName || "Pay Commission";
+        const billDescriptionValue = billDescription || "Pay commission to company UrbanDriveSdnBhd";
         
         console.log('Creating bill with:', {
             billTo: billToValue,
@@ -133,13 +165,16 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
             amount: amount
         });
         
-        // Create bill with proper billTo parameter and field length limits
+        // Get phone number from request or use default
+        const phoneNumber = req.body.billPhone || '0123456789';
+        
+        // Create bill with proper data and remove unnecessary fields
         const billData = {
-            billTo: billToValue, // This was the missing piece!
+            billTo: billToValue, // Real driver name from Android
             billDescription: billDescriptionValue.length > 100 ? billDescriptionValue.substring(0, 100) : billDescriptionValue,
             billEmail: billEmailValue,
-            billPhone: '0123456789', // Simple numeric format
-            billName: billNameValue, // Already truncated to 30 chars
+            billPhone: phoneNumber, // Real phone number from Android
+            billName: billNameValue, // Fixed: "Pay Commission"
             billAmount: Math.round(amount * 100), // Convert to cents
             billExternalReferenceNo: reference.length > 20 ? reference.substring(0, 20) : reference,
             billContentEmail: 'Thank you for your payment!',
@@ -301,7 +336,7 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
 });
 
 // Callback endpoint for ToyyibPay
-app.post('/api/toyyibpay/callback', upload.none(), async (req, res) => {
+app.post('/api/toyyibpay/callback', async (req, res) => {
     try {
         console.log('ToyyibPay callback received - Raw body:', req.body);
         console.log('ToyyibPay callback received - Headers:', req.headers);
@@ -448,7 +483,7 @@ async function addPaymentRecord(driverId, amount, billCode, reference) {
         const response = await fetch(paymentUrl, {
             method: 'POST',
             headers: {
-                'Content-Type': 'application/json',
+                'Content-Type': 'application/json',a
             },
             body: JSON.stringify(paymentData)
         });
@@ -464,6 +499,169 @@ async function addPaymentRecord(driverId, amount, billCode, reference) {
         return false;
     }
 }
+
+// Success page endpoint
+app.get('/api/toyyibpay/success', (req, res) => {
+    const { amount, driverName, reference, billCode } = req.query;
+    
+    const html = `
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Payment Success - UrbanDrive</title>
+        <style>
+            body {
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                margin: 0;
+                padding: 20px;
+                min-height: 100vh;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+            .success-container {
+                background: white;
+                border-radius: 20px;
+                padding: 40px;
+                box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+                text-align: center;
+                max-width: 500px;
+                width: 100%;
+            }
+            .success-icon {
+                font-size: 80px;
+                color: #4CAF50;
+                margin-bottom: 20px;
+            }
+            .success-title {
+                color: #333;
+                font-size: 28px;
+                font-weight: bold;
+                margin-bottom: 10px;
+            }
+            .success-subtitle {
+                color: #666;
+                font-size: 16px;
+                margin-bottom: 30px;
+            }
+            .payment-details {
+                background: #f8f9fa;
+                border-radius: 10px;
+                padding: 20px;
+                margin: 20px 0;
+                text-align: left;
+            }
+            .detail-row {
+                display: flex;
+                justify-content: space-between;
+                margin: 10px 0;
+                padding: 5px 0;
+                border-bottom: 1px solid #eee;
+            }
+            .detail-label {
+                font-weight: bold;
+                color: #555;
+            }
+            .detail-value {
+                color: #333;
+            }
+            .countdown {
+                background: #e3f2fd;
+                border-radius: 10px;
+                padding: 15px;
+                margin: 20px 0;
+                font-size: 18px;
+                font-weight: bold;
+                color: #1976d2;
+            }
+            .return-button {
+                background: #4CAF50;
+                color: white;
+                border: none;
+                padding: 15px 30px;
+                border-radius: 25px;
+                font-size: 16px;
+                font-weight: bold;
+                cursor: pointer;
+                margin-top: 20px;
+                transition: background 0.3s;
+            }
+            .return-button:hover {
+                background: #45a049;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="success-container">
+            <div class="success-icon">✓</div>
+            <h1 class="success-title">Payment Successful!</h1>
+            <p class="success-subtitle">Your commission payment has been processed successfully.</p>
+            
+            <div class="payment-details">
+                <div class="detail-row">
+                    <span class="detail-label">Driver Name:</span>
+                    <span class="detail-value">${driverName || 'N/A'}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Amount:</span>
+                    <span class="detail-value">RM ${amount || '0.00'}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Reference:</span>
+                    <span class="detail-value">${reference || 'N/A'}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Transaction ID:</span>
+                    <span class="detail-value">${billCode || 'N/A'}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Payment Date:</span>
+                    <span class="detail-value">${new Date().toLocaleDateString()}</span>
+                </div>
+            </div>
+            
+            <div class="countdown" id="countdown">
+                Redirecting to commission page in <span id="timer">10</span> seconds...
+            </div>
+            
+            <button class="return-button" onclick="returnToApp()">
+                Return to App Now
+            </button>
+        </div>
+        
+        <script>
+            let timeLeft = 10;
+            const timerElement = document.getElementById('timer');
+            
+            const countdown = setInterval(() => {
+                timeLeft--;
+                timerElement.textContent = timeLeft;
+                
+                if (timeLeft <= 0) {
+                    clearInterval(countdown);
+                    returnToApp();
+                }
+            }, 1000);
+            
+            function returnToApp() {
+                // Try to return to the app using deep link
+                window.location.href = 'yourapp://toyyib/return';
+                
+                // Fallback: close the window after a short delay
+                setTimeout(() => {
+                    window.close();
+                }, 1000);
+            }
+        </script>
+    </body>
+    </html>
+    `;
+    
+    res.send(html);
+});
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
