@@ -198,6 +198,7 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
             billContentEmail: 'Thank you for your payment!',
             billAdditionalField: JSON.stringify({
                 driverId: driverId,
+                amount: amount,
                 reference: reference,
                 timestamp: new Date().toISOString()
             })
@@ -385,12 +386,35 @@ app.post('/api/toyyibpay/callback', async (req, res) => {
             // Payment successful - update Firebase
             console.log('Payment successful for bill:', billCode);
             
+            // Get additional data from ToyyibPay callback
+            const billAdditionalField = req.body.billAdditionalField || req.query.billAdditionalField || req.body.BillAdditionalField || req.query.BillAdditionalField;
+            let driverId = null;
+            let amount = null;
+            let reference = null;
+            
+            if (billAdditionalField) {
+                try {
+                    const additionalData = JSON.parse(billAdditionalField);
+                    driverId = additionalData.driverId;
+                    amount = additionalData.amount;
+                    reference = additionalData.reference;
+                    console.log('Extracted additional data:', { driverId, amount, reference });
+                } catch (e) {
+                    console.error('Failed to parse additional field:', e);
+                }
+            } else {
+                console.warn('No additional field data found in callback - this might cause issues with Firebase update');
+            }
+            
             // Update Firebase to reduce commission
-            await updateCommissionInFirebase(billCode, billpaymentInvoiceNo);
+            await updateCommissionInFirebase(billCode, billpaymentInvoiceNo, driverId, amount, reference);
             
             console.log('Payment completed:', {
                 billCode,
                 invoiceNo: billpaymentInvoiceNo,
+                driverId,
+                amount,
+                reference,
                 status: 'paid',
                 action: 'Commission payment received from driver'
             });
@@ -406,24 +430,33 @@ app.post('/api/toyyibpay/callback', async (req, res) => {
 });
 
 // Function to update Firebase when payment is successful
-async function updateCommissionInFirebase(billCode, invoiceNo) {
+async function updateCommissionInFirebase(billCode, invoiceNo, driverId, amount, reference) {
     try {
         console.log('Updating Firebase for payment:', {
             billCode,
             invoiceNo,
+            driverId,
+            amount,
+            reference,
             action: 'Reduce unpaid commission',
             timestamp: new Date().toISOString()
         });
         
-        // For now, we'll use a hardcoded driver ID since we know it from the dashboard
-        // In a real implementation, you'd store the billCode -> driverId mapping
-        const driverId = 'dc0aoTWfphdVK0ayxCbgIm6aLTq1'; // From your dashboard
-        const amount = 3000; // From your dashboard - this should be dynamic
+        // Validate required parameters
+        if (!driverId) {
+            console.error('No driverId provided for Firebase update');
+            return false;
+        }
+        
+        if (!amount || amount <= 0) {
+            console.error('Invalid amount provided for Firebase update:', amount);
+            return false;
+        }
         
         console.log('Processing payment for driver:', driverId, 'Amount:', amount);
         
         // Update Firebase commission
-        const success = await updateFirebaseCommission(driverId, amount, billCode, invoiceNo);
+        const success = await updateFirebaseCommission(driverId, amount, billCode, reference);
         
         if (success) {
             console.log('Firebase update completed successfully for bill:', billCode);
