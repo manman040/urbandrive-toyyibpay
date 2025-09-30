@@ -109,6 +109,12 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
     try {
         console.log('Received request:', JSON.stringify(req.body, null, 2));
         console.log('Request headers:', JSON.stringify(req.headers, null, 2));
+        console.log('Bill data from Android:', {
+            billTo: req.body.billTo,
+            billName: req.body.billName,
+            billDescription: req.body.billDescription,
+            billPhone: req.body.billPhone
+        });
         
         const { 
             amount, 
@@ -162,11 +168,23 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
             billEmail: billEmailValue,
             billName: billNameValue,
             billDescription: billDescriptionValue,
-            amount: amount
+            amount: amount,
+            phoneFromRequest: req.body.billPhone
         });
         
         // Get phone number from request or use default
         const phoneNumber = req.body.billPhone || '0123456789';
+        
+        // Log the final data being sent to ToyyibPay
+        console.log('Final bill data before sending to ToyyibPay:', {
+            billTo: billToValue,
+            billName: billNameValue,
+            billDescription: billDescriptionValue,
+            billPhone: phoneNumber,
+            billEmail: billEmailValue,
+            amount: amount,
+            timestamp: req.body.timestamp
+        });
         
         // Create bill with proper data and remove unnecessary fields
         const billData = {
@@ -204,7 +222,7 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
             billAmount: billData.billAmount,
             billReturnUrl: returnUrl,
             billCallbackUrl: callbackUrl,
-            billExternalReferenceNo: billData.billExternalReferenceNo,
+            billExternalReferenceNo: billData.billExternalReferenceNo + '_' + Date.now(), // Add timestamp to prevent caching
             billTo: billData.billTo,
             billEmail: billData.billEmail,
             billPhone: billData.billPhone,
@@ -483,11 +501,11 @@ async function addPaymentRecord(driverId, amount, billCode, reference) {
         const response = await fetch(paymentUrl, {
             method: 'POST',
             headers: {
-                'Content-Type': 'application/json',a
+                'Content-Type': 'application/json',
             },
             body: JSON.stringify(paymentData)
         });
-        
+
         if (response.ok) {
             console.log('Payment record added successfully:', paymentData);
             return true;
@@ -499,6 +517,19 @@ async function addPaymentRecord(driverId, amount, billCode, reference) {
         return false;
     }
 }
+
+// Test endpoint to verify data
+app.get('/api/toyyibpay/test', (req, res) => {
+    res.json({
+        message: "ToyyibPay backend is working",
+        timestamp: new Date().toISOString(),
+        environment: {
+            hasSecretKey: !!TOYYIBPAY_USER_SECRET_KEY,
+            hasCategoryCode: !!TOYYIBPAY_CATEGORY_CODE,
+            apiUrl: TOYYIBPAY_API_URL
+        }
+    });
+});
 
 // Success page endpoint
 app.get('/api/toyyibpay/success', (req, res) => {
