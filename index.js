@@ -194,14 +194,10 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
             billPhone: phoneNumber, // Real phone number from Android
             billName: billNameValue, // Fixed: "Pay Commission"
             billAmount: Math.round(amount * 100), // Convert to cents
-            billExternalReferenceNo: reference.length > 20 ? reference.substring(0, 20) : reference,
             billContentEmail: 'Thank you for your payment!',
-            billAdditionalField: JSON.stringify({
-                driverId: driverId,
-                amount: amount,
-                reference: reference,
-                timestamp: new Date().toISOString()
-            })
+            // Store additional data in billExternalReferenceNo instead of billAdditionalField
+            // to prevent it from showing as editable form fields
+            billExternalReferenceNo: `${reference}_${driverId}_${amount}_${Date.now()}`
         };
         
         // Ensure phone number is numeric only - remove any non-numeric characters
@@ -386,24 +382,29 @@ app.post('/api/toyyibpay/callback', async (req, res) => {
             // Payment successful - update Firebase
             console.log('Payment successful for bill:', billCode);
             
-            // Get additional data from ToyyibPay callback
-            const billAdditionalField = req.body.billAdditionalField || req.query.billAdditionalField || req.body.BillAdditionalField || req.query.BillAdditionalField;
+            // Get additional data from billExternalReferenceNo instead of billAdditionalField
+            const billExternalReferenceNo = req.body.billExternalReferenceNo || req.query.billExternalReferenceNo || req.body.BillExternalReferenceNo || req.query.BillExternalReferenceNo;
             let driverId = null;
             let amount = null;
             let reference = null;
             
-            if (billAdditionalField) {
+            if (billExternalReferenceNo) {
                 try {
-                    const additionalData = JSON.parse(billAdditionalField);
-                    driverId = additionalData.driverId;
-                    amount = additionalData.amount;
-                    reference = additionalData.reference;
-                    console.log('Extracted additional data:', { driverId, amount, reference });
+                    // Parse the reference number format: reference_driverId_amount_timestamp
+                    const parts = billExternalReferenceNo.split('_');
+                    if (parts.length >= 3) {
+                        reference = parts[0];
+                        driverId = parts[1];
+                        amount = parseFloat(parts[2]);
+                        console.log('Extracted data from reference number:', { driverId, amount, reference });
+                    } else {
+                        console.warn('Invalid reference number format:', billExternalReferenceNo);
+                    }
                 } catch (e) {
-                    console.error('Failed to parse additional field:', e);
+                    console.error('Failed to parse reference number:', e);
                 }
             } else {
-                console.warn('No additional field data found in callback - this might cause issues with Firebase update');
+                console.warn('No reference number found in callback - this might cause issues with Firebase update');
             }
             
             // Update Firebase to reduce commission
@@ -560,6 +561,227 @@ app.get('/api/toyyibpay/test', (req, res) => {
             hasSecretKey: !!TOYYIBPAY_USER_SECRET_KEY,
             hasCategoryCode: !!TOYYIBPAY_CATEGORY_CODE,
             apiUrl: TOYYIBPAY_API_URL
+        }
+    });
+});
+
+// Settings API endpoints
+// Get driver settings
+app.get('/api/settings/:driverId', async (req, res) => {
+    try {
+        const { driverId } = req.params;
+        const settingsUrl = `${FIREBASE_DATABASE_URL}/driver_settings/${driverId}.json`;
+        
+        const response = await fetch(settingsUrl);
+        const settings = await response.json();
+        
+        // Default settings if none exist
+        const defaultSettings = {
+            notifications: {
+                commissionReminders: true,
+                jobAlerts: true,
+                pushNotifications: true,
+                emailNotifications: false
+            },
+            privacy: {
+                dataSharing: false,
+                locationTracking: true,
+                analytics: false
+            },
+            lastUpdated: new Date().toISOString()
+        };
+        
+        res.json({
+            success: true,
+            settings: settings || defaultSettings
+        });
+    } catch (error) {
+        console.error('Get settings error:', error);
+        res.status(500).json({ error: 'Failed to get settings' });
+    }
+});
+
+// Update driver settings
+app.post('/api/settings/:driverId', async (req, res) => {
+    try {
+        const { driverId } = req.params;
+        const { settings } = req.body;
+        
+        const settingsUrl = `${FIREBASE_DATABASE_URL}/driver_settings/${driverId}.json`;
+        
+        const updateData = {
+            ...settings,
+            lastUpdated: new Date().toISOString()
+        };
+        
+        const response = await fetch(settingsUrl, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(updateData)
+        });
+        
+        if (response.ok) {
+            res.json({
+                success: true,
+                message: 'Settings updated successfully',
+                settings: updateData
+            });
+        } else {
+            res.status(500).json({ error: 'Failed to update settings' });
+        }
+    } catch (error) {
+        console.error('Update settings error:', error);
+        res.status(500).json({ error: 'Failed to update settings' });
+    }
+});
+
+// Send notification to driver
+app.post('/api/notifications/send', async (req, res) => {
+    try {
+        const { driverId, type, title, message, data } = req.body;
+        
+        // Check if driver has notifications enabled
+        const settingsUrl = `${FIREBASE_DATABASE_URL}/driver_settings/${driverId}.json`;
+        const settingsResponse = await fetch(settingsUrl);
+        const settings = await settingsResponse.json();
+        
+        if (!settings || !settings.notifications || !settings.notifications.pushNotifications) {
+            return res.json({
+                success: false,
+                message: 'Driver has notifications disabled'
+            });
+        }
+        
+        // Store notification in Firebase
+        const notificationData = {
+            driverId,
+            type,
+            title,
+            message,
+            data: data || {},
+            timestamp: new Date().toISOString(),
+            read: false
+        };
+        
+        const notificationUrl = `${FIREBASE_DATABASE_URL}/driver_notifications/${driverId}.json`;
+        const response = await fetch(notificationUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(notificationData)
+        });
+        
+        if (response.ok) {
+            res.json({
+                success: true,
+                message: 'Notification sent successfully',
+                notification: notificationData
+            });
+        } else {
+            res.status(500).json({ error: 'Failed to send notification' });
+        }
+    } catch (error) {
+        console.error('Send notification error:', error);
+        res.status(500).json({ error: 'Failed to send notification' });
+    }
+});
+
+// Get driver notifications
+app.get('/api/notifications/:driverId', async (req, res) => {
+    try {
+        const { driverId } = req.params;
+        const notificationsUrl = `${FIREBASE_DATABASE_URL}/driver_notifications/${driverId}.json`;
+        
+        const response = await fetch(notificationsUrl);
+        const notifications = await response.json();
+        
+        // Convert to array and sort by timestamp
+        const notificationsArray = notifications ? Object.values(notifications).sort((a, b) => 
+            new Date(b.timestamp) - new Date(a.timestamp)
+        ) : [];
+        
+        res.json({
+            success: true,
+            notifications: notificationsArray
+        });
+    } catch (error) {
+        console.error('Get notifications error:', error);
+        res.status(500).json({ error: 'Failed to get notifications' });
+    }
+});
+
+// Mark notification as read
+app.post('/api/notifications/:driverId/read', async (req, res) => {
+    try {
+        const { driverId } = req.params;
+        const { notificationId } = req.body;
+        
+        const notificationUrl = `${FIREBASE_DATABASE_URL}/driver_notifications/${driverId}/${notificationId}.json`;
+        
+        const response = await fetch(notificationUrl, {
+            method: 'PATCH',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ read: true })
+        });
+        
+        if (response.ok) {
+            res.json({
+                success: true,
+                message: 'Notification marked as read'
+            });
+        } else {
+            res.status(500).json({ error: 'Failed to mark notification as read' });
+        }
+    } catch (error) {
+        console.error('Mark notification read error:', error);
+        res.status(500).json({ error: 'Failed to mark notification as read' });
+    }
+});
+
+// Get app information
+app.get('/api/app/info', (req, res) => {
+    res.json({
+        success: true,
+        appInfo: {
+            name: "UrbanDrive",
+            version: "1.0.0",
+            description: "UrbanDrive is a comprehensive ride-sharing platform that connects drivers with passengers, providing a seamless transportation experience across urban areas. Our app features real-time tracking, secure payments, commission management, and advanced safety features.",
+            history: "UrbanDrive was developed as a Final Year Project (FYP) to revolutionize urban transportation. The project began in 2024 with the vision of creating a more efficient, safe, and user-friendly ride-sharing platform.",
+            createdDate: "January 2024",
+            lastUpdated: "December 2024",
+            creators: [
+                {
+                    name: "Aiman Farhan",
+                    role: "Lead Developer & Backend Engineer",
+                    contribution: "Backend development, API integration, payment systems, and database architecture"
+                },
+                {
+                    name: "Izzral Firhan", 
+                    role: "Frontend Developer & UI/UX Designer",
+                    contribution: "Mobile app development, user interface design, and user experience optimization"
+                }
+            ],
+            features: [
+                "Real-time GPS tracking",
+                "Secure payment processing via ToyyibPay",
+                "Commission management system",
+                "Driver and passenger matching",
+                "Safety features and emergency contacts",
+                "Notification system",
+                "Privacy and security controls"
+            ],
+            technologies: [
+                "React Native (Mobile App)",
+                "Node.js & Express (Backend)",
+                "Firebase (Database)",
+                "ToyyibPay (Payment Gateway)",
+                "Google Maps API (Location Services)"
+            ]
         }
     });
 });
