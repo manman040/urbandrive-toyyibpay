@@ -284,12 +284,16 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
         let responseText;
         
         try {
+            // Use FormData instead of URLSearchParams for ToyyibPay
+            const formData = new FormData();
+            Object.keys(toyyibpayData).forEach(key => {
+                formData.append(key, toyyibpayData[key]);
+            });
+            
             response = await fetch(TOYYIBPAY_API_URL, {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                },
-                body: new URLSearchParams(toyyibpayData)
+                // Remove Content-Type header to let fetch set the correct boundary
+                body: formData
             });
             
             responseText = await response.text();
@@ -641,12 +645,16 @@ app.get('/api/toyyibpay/credential-test', async (req, res) => {
         console.log('Sending test request to ToyyibPay...');
         console.log('Test data being sent:', testData);
         
+        // Use FormData for ToyyibPay API
+        const formData = new FormData();
+        Object.keys(testData).forEach(key => {
+            formData.append(key, testData[key]);
+        });
+        
         const response = await fetch(TOYYIBPAY_API_URL, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded',
-            },
-            body: new URLSearchParams(testData)
+            // Remove Content-Type header to let fetch set the correct boundary
+            body: formData
         });
         
         const responseText = await response.text();
