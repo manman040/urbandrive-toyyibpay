@@ -60,9 +60,31 @@ const TOYYIBPAY_USER_SECRET_KEY = process.env.TOYYIBPAY_USER_SECRET_KEY;
 const TOYYIBPAY_CATEGORY_CODE = process.env.TOYYIBPAY_CATEGORY_CODE;
 const TOYYIBPAY_API_URL = 'https://dev.toyyibpay.com/index.php/api/createBill';
 
+// Log credentials on startup
+console.log('ToyyibPay Configuration:');
+console.log('Secret Key:', TOYYIBPAY_USER_SECRET_KEY ? `${TOYYIBPAY_USER_SECRET_KEY.substring(0, 8)}...` : 'MISSING');
+console.log('Category Code:', TOYYIBPAY_CATEGORY_CODE);
+console.log('API URL:', TOYYIBPAY_API_URL);
+
 // Health check endpoint
 app.get('/api/health', (req, res) => {
     res.json({ ok: true, service: 'ToyyibPay backend' });
+});
+
+// Simple credential verification endpoint
+app.get('/api/toyyibpay/verify', (req, res) => {
+    res.json({
+        success: true,
+        message: 'ToyyibPay credentials loaded',
+        credentials: {
+            hasSecretKey: !!TOYYIBPAY_USER_SECRET_KEY,
+            hasCategoryCode: !!TOYYIBPAY_CATEGORY_CODE,
+            secretKeyPreview: TOYYIBPAY_USER_SECRET_KEY ? `${TOYYIBPAY_USER_SECRET_KEY.substring(0, 8)}...` : 'MISSING',
+            categoryCodePreview: TOYYIBPAY_CATEGORY_CODE || 'MISSING',
+            apiUrl: TOYYIBPAY_API_URL
+        },
+        timestamp: new Date().toISOString()
+    });
 });
 
 // Manual commission update endpoint for testing
