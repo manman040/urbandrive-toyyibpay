@@ -177,6 +177,25 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
             });
         }
         
+        // Validate amount limits for ToyyibPay
+        if (amount < 1) {
+            console.error('Amount too small:', amount);
+            return res.status(400).json({
+                error: 'Invalid amount',
+                message: 'Amount must be at least RM 1.00',
+                received: amount
+            });
+        }
+        
+        if (amount > 10000) {
+            console.error('Amount too large:', amount);
+            return res.status(400).json({
+                error: 'Invalid amount',
+                message: 'Amount must not exceed RM 10,000.00',
+                received: amount
+            });
+        }
+        
         // Use the billTo parameter we're sending from Android (now contains real driver name)
         const billToValue = billTo || driverId;
         const billEmailValue = billEmail || `${driverId}@urbandrive.com`;
@@ -219,7 +238,8 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
             billContentEmail: 'Thank you for your payment!',
             // Store additional data in billExternalReferenceNo instead of billAdditionalField
             // to prevent it from showing as editable form fields
-            billExternalReferenceNo: `${reference}_${driverId}_${amount}_${Date.now()}`
+            // Shorten the reference to meet ToyyibPay limits (max 20 characters)
+            billExternalReferenceNo: `${reference}_${Date.now()}`.substring(0, 20)
         };
         
         // Ensure phone number is numeric only - remove any non-numeric characters
@@ -601,16 +621,16 @@ app.get('/api/toyyibpay/credential-test', async (req, res) => {
         const testData = {
             userSecretKey: TOYYIBPAY_USER_SECRET_KEY,
             categoryCode: TOYYIBPAY_CATEGORY_CODE,
-            billName: "Test Bill",
+            billName: "Test",
             billDescription: "Test",
             billPriceSetting: 1,
             billPayorInfo: 1,
             billAmount: 100, // RM 1.00
             billReturnUrl: "https://example.com/return",
             billCallbackUrl: "https://example.com/callback",
-            billExternalReferenceNo: "test_" + Date.now(),
-            billTo: "Test User",
-            billEmail: "test@example.com",
+            billExternalReferenceNo: "test123",
+            billTo: "Test",
+            billEmail: "test@test.com",
             billPhone: "0123456789",
             billSplitPayment: 0,
             billSplitPaymentArgs: "",
