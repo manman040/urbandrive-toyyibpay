@@ -565,6 +565,105 @@ app.get('/api/toyyibpay/test', (req, res) => {
     });
 });
 
+// Credential test endpoint
+app.get('/api/toyyibpay/credential-test', async (req, res) => {
+    try {
+        console.log('Testing ToyyibPay credentials...');
+        console.log('Full credentials being used:', {
+            userSecretKey: TOYYIBPAY_USER_SECRET_KEY,
+            categoryCode: TOYYIBPAY_CATEGORY_CODE,
+            apiUrl: TOYYIBPAY_API_URL
+        });
+        
+        // Test with a minimal bill creation request
+        const testData = {
+            userSecretKey: TOYYIBPAY_USER_SECRET_KEY,
+            categoryCode: TOYYIBPAY_CATEGORY_CODE,
+            billName: "Test Bill",
+            billDescription: "Test",
+            billPriceSetting: 1,
+            billPayorInfo: 1,
+            billAmount: 100, // RM 1.00
+            billReturnUrl: "https://example.com/return",
+            billCallbackUrl: "https://example.com/callback",
+            billExternalReferenceNo: "test_" + Date.now(),
+            billTo: "Test User",
+            billEmail: "test@example.com",
+            billPhone: "0123456789",
+            billSplitPayment: 0,
+            billSplitPaymentArgs: "",
+            billPaymentChannel: "0",
+            billContentEmail: "Test"
+        };
+        
+        console.log('Sending test request to ToyyibPay...');
+        console.log('Test data being sent:', testData);
+        
+        const response = await fetch(TOYYIBPAY_API_URL, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: new URLSearchParams(testData)
+        });
+        
+        const responseText = await response.text();
+        console.log('ToyyibPay test response:', responseText);
+        console.log('ToyyibPay test status:', response.status);
+        console.log('ToyyibPay test headers:', response.headers);
+        
+        // Check if response is successful
+        let isSuccess = false;
+        let billCode = null;
+        
+        if (responseText.includes('[FALSE]')) {
+            console.log('ToyyibPay returned [FALSE] - credentials are invalid');
+        } else if (responseText.includes('[') && responseText.includes(']')) {
+            try {
+                const result = JSON.parse(responseText);
+                if (Array.isArray(result) && result.length > 0 && result[0].BillCode) {
+                    isSuccess = true;
+                    billCode = result[0].BillCode;
+                    console.log('ToyyibPay test successful, bill code:', billCode);
+                }
+            } catch (parseError) {
+                console.log('Failed to parse ToyyibPay response:', parseError);
+            }
+        }
+        
+        res.json({
+            success: isSuccess,
+            status: response.status,
+            response: responseText,
+            billCode: billCode,
+            credentials: {
+                hasSecretKey: !!TOYYIBPAY_USER_SECRET_KEY,
+                hasCategoryCode: !!TOYYIBPAY_CATEGORY_CODE,
+                secretKeyFull: TOYYIBPAY_USER_SECRET_KEY,
+                categoryCodeFull: TOYYIBPAY_CATEGORY_CODE,
+                secretKeyPreview: TOYYIBPAY_USER_SECRET_KEY ? `${TOYYIBPAY_USER_SECRET_KEY.substring(0, 8)}...` : 'MISSING',
+                categoryCodePreview: TOYYIBPAY_CATEGORY_CODE ? `${TOYYIBPAY_CATEGORY_CODE.substring(0, 8)}...` : 'MISSING'
+            },
+            timestamp: new Date().toISOString()
+        });
+        
+    } catch (error) {
+        console.error('Credential test error:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message,
+            credentials: {
+                hasSecretKey: !!TOYYIBPAY_USER_SECRET_KEY,
+                hasCategoryCode: !!TOYYIBPAY_CATEGORY_CODE,
+                secretKeyFull: TOYYIBPAY_USER_SECRET_KEY,
+                categoryCodeFull: TOYYIBPAY_CATEGORY_CODE,
+                secretKeyPreview: TOYYIBPAY_USER_SECRET_KEY ? `${TOYYIBPAY_USER_SECRET_KEY.substring(0, 8)}...` : 'MISSING',
+                categoryCodePreview: TOYYIBPAY_CATEGORY_CODE ? `${TOYYIBPAY_CATEGORY_CODE.substring(0, 8)}...` : 'MISSING'
+            }
+        });
+    }
+});
+
 // Settings API endpoints
 // Get driver settings
 app.get('/api/settings/:driverId', async (req, res) => {
@@ -634,6 +733,125 @@ app.post('/api/settings/:driverId', async (req, res) => {
     } catch (error) {
         console.error('Update settings error:', error);
         res.status(500).json({ error: 'Failed to update settings' });
+    }
+});
+
+// Create booking and notify drivers
+app.post('/api/bookings/create', async (req, res) => {
+    try {
+        const { userId, pickupLocation, destination, vehicleType, fare, status, timestamp } = req.body;
+        
+        console.log('New booking created:', {
+            userId,
+            pickupLocation,
+            destination,
+            vehicleType,
+            fare,
+            status
+        });
+        
+        // Store booking in Firebase
+        const bookingData = {
+            userId,
+            pickupLocation,
+            destination,
+            vehicleType,
+            fare,
+            status,
+            timestamp,
+            createdAt: new Date().toISOString()
+        };
+        
+        const bookingUrl = `${FIREBASE_DATABASE_URL}/bookings.json`;
+        const bookingResponse = await fetch(bookingUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(bookingData)
+        });
+        
+        if (!bookingResponse.ok) {
+            throw new Error('Failed to store booking');
+        }
+        
+        const bookingResult = await bookingResponse.json();
+        const bookingId = bookingResult.name;
+        
+        // Get all available drivers
+        const driversUrl = `${FIREBASE_DATABASE_URL}/drivers.json`;
+        const driversResponse = await fetch(driversUrl);
+        const drivers = await driversResponse.json();
+        
+        if (!drivers) {
+            return res.json({
+                success: true,
+                message: 'Booking created but no drivers available',
+                bookingId
+            });
+        }
+        
+        // Send notifications to all available drivers
+        const notificationPromises = Object.entries(drivers).map(async ([driverId, driverData]) => {
+            try {
+                // Check if driver has notifications enabled
+                const settingsUrl = `${FIREBASE_DATABASE_URL}/driver_settings/${driverId}.json`;
+                const settingsResponse = await fetch(settingsUrl);
+                const settings = await settingsResponse.json();
+                
+                if (settings && settings.notifications && settings.notifications.jobAlerts === false) {
+                    console.log(`Driver ${driverId} has job alerts disabled`);
+                    return;
+                }
+                
+                // Send job alert notification
+                const notificationData = {
+                    driverId,
+                    type: 'job_alert',
+                    title: 'New Ride Request!',
+                    message: `Pickup: ${pickupLocation}\nDestination: ${destination}\nFare: RM ${fare.toFixed(2)}\nVehicle: ${vehicleType}`,
+                    data: {
+                        bookingId,
+                        pickupLocation,
+                        destination,
+                        fare,
+                        vehicleType,
+                        userId
+                    }
+                };
+                
+                const notificationUrl = `${FIREBASE_DATABASE_URL}/driver_notifications/${driverId}.json`;
+                await fetch(notificationUrl, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(notificationData)
+                });
+                
+                console.log(`Job alert sent to driver ${driverId}`);
+            } catch (error) {
+                console.error(`Error sending notification to driver ${driverId}:`, error);
+            }
+        });
+        
+        // Wait for all notifications to be sent
+        await Promise.all(notificationPromises);
+        
+        res.json({
+            success: true,
+            message: 'Booking created and drivers notified',
+            bookingId,
+            driversNotified: Object.keys(drivers).length
+        });
+        
+    } catch (error) {
+        console.error('Error creating booking:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to create booking',
+            message: error.message
+        });
     }
 });
 
