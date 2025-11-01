@@ -303,11 +303,23 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
             
         } catch (fetchError) {
             console.error('Fetch error:', fetchError);
+            
+            // Check for SSL/TLS related errors
+            if (fetchError.message.includes('certificate') || fetchError.message.includes('SSL') || fetchError.message.includes('TLS')) {
+                throw new Error(`SSL Certificate Error: Unable to establish secure connection to ToyyibPay API. This is a server-side SSL certificate issue with dev.toyyibpay.com that needs to be resolved by ToyyibPay or your hosting provider. Error: ${fetchError.message}`);
+            }
+            
             throw new Error(`Failed to connect to ToyyibPay API: ${fetchError.message}`);
         }
         
-        // Check if response is HTML (error page)
+        // Check if response is HTML (error page) - specifically check for Cloudflare SSL errors
         if (responseText.includes('<!DOCTYPE html>') || responseText.includes('<html')) {
+            // Check for Cloudflare SSL error (Error 526)
+            if (responseText.includes('Invalid SSL certificate') || responseText.includes('Error code 526')) {
+                console.error('Cloudflare SSL certificate error (526) detected');
+                throw new Error(`Cloudflare SSL Error (526): The ToyyibPay API endpoint (dev.toyyibpay.com) has an invalid SSL certificate. This is a server-side issue that needs to be fixed by ToyyibPay. The connection is being blocked by Cloudflare's security layer. Please contact ToyyibPay support to resolve the SSL certificate issue.`);
+            }
+            
             console.error('ToyyibPay returned HTML error page:', responseText.substring(0, 500));
             throw new Error(`ToyyibPay API returned HTML error page. Check your credentials and API endpoint. Response: ${responseText.substring(0, 200)}...`);
         }
@@ -651,16 +663,68 @@ app.get('/api/toyyibpay/credential-test', async (req, res) => {
             formData.append(key, testData[key]);
         });
         
-        const response = await fetch(TOYYIBPAY_API_URL, {
-            method: 'POST',
-            // Remove Content-Type header to let fetch set the correct boundary
-            body: formData
-        });
+        let response;
+        let responseText;
         
-        const responseText = await response.text();
-        console.log('ToyyibPay test response:', responseText);
-        console.log('ToyyibPay test status:', response.status);
-        console.log('ToyyibPay test headers:', response.headers);
+        try {
+            response = await fetch(TOYYIBPAY_API_URL, {
+                method: 'POST',
+                // Remove Content-Type header to let fetch set the correct boundary
+                body: formData
+            });
+            
+            responseText = await response.text();
+            console.log('ToyyibPay test response:', responseText);
+            console.log('ToyyibPay test status:', response.status);
+            console.log('ToyyibPay test headers:', response.headers);
+        } catch (fetchError) {
+            console.error('Credential test fetch error:', fetchError);
+            
+            // Check for SSL/TLS related errors
+            if (fetchError.message.includes('certificate') || fetchError.message.includes('SSL') || fetchError.message.includes('TLS')) {
+                return res.status(500).json({
+                    success: false,
+                    status: 526,
+                    error: 'SSL Certificate Error',
+                    message: `Unable to establish secure connection to ToyyibPay API. This is a server-side SSL certificate issue with dev.toyyibpay.com that needs to be resolved by ToyyibPay.`,
+                    response: fetchError.message,
+                    credentials: {
+                        hasSecretKey: !!TOYYIBPAY_USER_SECRET_KEY,
+                        hasCategoryCode: !!TOYYIBPAY_CATEGORY_CODE,
+                        secretKeyFull: TOYYIBPAY_USER_SECRET_KEY,
+                        categoryCodeFull: TOYYIBPAY_CATEGORY_CODE,
+                        secretKeyPreview: TOYYIBPAY_USER_SECRET_KEY ? `${TOYYIBPAY_USER_SECRET_KEY.substring(0, 8)}...` : 'MISSING',
+                        categoryCodePreview: TOYYIBPAY_CATEGORY_CODE ? `${TOYYIBPAY_CATEGORY_CODE.substring(0, 8)}...` : 'MISSING'
+                    }
+                });
+            }
+            
+            throw fetchError;
+        }
+        
+        // Check if response is HTML (error page) - specifically check for Cloudflare SSL errors
+        if (responseText.includes('<!DOCTYPE html>') || responseText.includes('<html')) {
+            // Check for Cloudflare SSL error (Error 526)
+            if (responseText.includes('Invalid SSL certificate') || responseText.includes('Error code 526')) {
+                console.error('Cloudflare SSL certificate error (526) detected in credential test');
+                return res.json({
+                    success: false,
+                    status: 526,
+                    error: 'Cloudflare SSL Error (526)',
+                    message: 'The ToyyibPay API endpoint (dev.toyyibpay.com) has an invalid SSL certificate. This is a server-side issue that needs to be fixed by ToyyibPay. The connection is being blocked by Cloudflare\'s security layer.',
+                    response: responseText.substring(0, 500),
+                    credentials: {
+                        hasSecretKey: !!TOYYIBPAY_USER_SECRET_KEY,
+                        hasCategoryCode: !!TOYYIBPAY_CATEGORY_CODE,
+                        secretKeyFull: TOYYIBPAY_USER_SECRET_KEY,
+                        categoryCodeFull: TOYYIBPAY_CATEGORY_CODE,
+                        secretKeyPreview: TOYYIBPAY_USER_SECRET_KEY ? `${TOYYIBPAY_USER_SECRET_KEY.substring(0, 8)}...` : 'MISSING',
+                        categoryCodePreview: TOYYIBPAY_CATEGORY_CODE ? `${TOYYIBPAY_CATEGORY_CODE.substring(0, 8)}...` : 'MISSING'
+                    },
+                    timestamp: new Date().toISOString()
+                });
+            }
+        }
         
         // Check if response is successful
         let isSuccess = false;
