@@ -237,6 +237,12 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
         });
         
         // Create bill with proper data and remove unnecessary fields
+        // Generate a unique reference number that includes driverId, amount, and timestamp
+        // Format: reference_driverId_amount_timestamp (limited to 50 chars for ToyyibPay)
+        const timestamp = Date.now();
+        const refParts = [reference || 'REF', driverId.substring(0, 10), amount.toString(), timestamp.toString()];
+        const billExternalReferenceNo = refParts.join('_').substring(0, 50);
+        
         const billData = {
             billTo: billToValue, // Real driver name from Android
             billDescription: billDescriptionValue.length > 100 ? billDescriptionValue.substring(0, 100) : billDescriptionValue,
@@ -245,10 +251,7 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
             billName: billNameValue, // Fixed: "Pay Commission"
             billAmount: Math.round(amount * 100), // Convert to cents
             billContentEmail: 'Thank you for your payment!',
-            // Store additional data in billExternalReferenceNo instead of billAdditionalField
-            // to prevent it from showing as editable form fields
-            // Shorten the reference to meet ToyyibPay limits (max 20 characters)
-            billExternalReferenceNo: `${reference}_${Date.now()}`.substring(0, 20)
+            billExternalReferenceNo: billExternalReferenceNo
         };
         
         // Ensure phone number is numeric only - remove any non-numeric characters
@@ -270,7 +273,7 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
             billAmount: billData.billAmount,
             billReturnUrl: returnUrl,
             billCallbackUrl: callbackUrl,
-            billExternalReferenceNo: billData.billExternalReferenceNo + '_' + Date.now(), // Add timestamp to prevent caching
+            billExternalReferenceNo: billData.billExternalReferenceNo, // Use the reference we created above (no double timestamp)
             billTo: billData.billTo,
             billEmail: billData.billEmail,
             billPhone: billData.billPhone,
@@ -459,11 +462,18 @@ app.post('/api/toyyibpay/callback', async (req, res) => {
                 try {
                     // Parse the reference number format: reference_driverId_amount_timestamp
                     const parts = billExternalReferenceNo.split('_');
-                    if (parts.length >= 3) {
+                    if (parts.length >= 4) {
+                        // New format: reference_driverId_amount_timestamp
                         reference = parts[0];
                         driverId = parts[1];
                         amount = parseFloat(parts[2]);
-                        console.log('Extracted data from reference number:', { driverId, amount, reference });
+                        console.log('Extracted data from reference number:', { driverId, amount, reference, timestamp: parts[3] });
+                    } else if (parts.length >= 3) {
+                        // Fallback for old format: reference_driverId_amount
+                        reference = parts[0];
+                        driverId = parts[1];
+                        amount = parseFloat(parts[2]);
+                        console.log('Extracted data from reference number (old format):', { driverId, amount, reference });
                     } else {
                         console.warn('Invalid reference number format:', billExternalReferenceNo);
                     }
