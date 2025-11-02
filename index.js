@@ -237,11 +237,14 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
         });
         
         // Create bill with proper data and remove unnecessary fields
-        // Generate a unique reference number - keep it simple and short
-        // Format: reference_timestamp (ToyyibPay recommends keeping ref short)
+        // Generate a unique reference number that includes necessary data for callback
+        // Format: ref_driverIdShort_amount_timestamp (max 50 chars for ToyyibPay)
         const timestamp = Date.now();
-        // Use only reference and timestamp, keep it under 50 chars
-        const billExternalReferenceNo = `${reference || 'REF'}_${timestamp}`.substring(0, 50);
+        // Shorten driverId to first 8 chars to save space, include amount
+        const driverIdShort = driverId.substring(0, 8);
+        // Build reference: ref_driverIdShort_amount_timestamp
+        // Example: seringgit_dc0aoTWf_1_1762055701520 (31 chars - well under 50)
+        const billExternalReferenceNo = `${reference || 'REF'}_${driverIdShort}_${amount}_${timestamp}`.substring(0, 50);
         
         const billData = {
             billTo: billToValue, // Real driver name from Android
@@ -422,6 +425,9 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
             
             console.log('Bill created successfully:', { billCode, paymentUrl });
             
+            // Store billCode mapping for callback retrieval
+            await storeBillCodeMapping(billCode, driverId, amount, reference, billData.billExternalReferenceNo);
+            
             res.json({
                 success: true,
                 billCode: billCode,
@@ -431,6 +437,9 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
         } else if (result && result.billCode) {
             // Alternative format: {"billCode":"rp0fcxj8"}
             const paymentUrl = `${TOYYIBPAY_BASE_URL}/${result.billCode}`;
+            
+            // Store billCode mapping for callback retrieval
+            await storeBillCodeMapping(result.billCode, driverId, amount, reference, billData.billExternalReferenceNo);
             
             res.json({
                 success: true,
@@ -505,28 +514,107 @@ app.post('/api/toyyibpay/callback', async (req, res) => {
             
             if (billExternalReferenceNo) {
                 try {
-                    // Parse the reference number format: reference_timestamp
-                    // Note: For production, we'll need to store driverId and amount separately
-                    // For now, try to extract from reference if possible
+                    // Parse the reference number format: reference_driverIdShort_amount_timestamp
                     const parts = billExternalReferenceNo.split('_');
-                    if (parts.length >= 2) {
+                    if (parts.length >= 4) {
+                        // New format: reference_driverIdShort_amount_timestamp
                         reference = parts[0];
-                        // Timestamp is in parts[1], but we need driverId and amount from elsewhere
-                        // Try to get from request body/query if available
-                        const reqDriverId = req.body.driverId || req.query.driverId;
-                        const reqAmount = req.body.amount || req.query.amount;
-                        if (reqDriverId) driverId = reqDriverId;
-                        if (reqAmount) amount = parseFloat(reqAmount);
-                        console.log('Extracted data from reference number:', { reference, driverId, amount });
+                        const driverIdShort = parts[1];
+                        amount = parseFloat(parts[2]);
+                        const refTimestamp = parts[3];
+                        
+                        // We need to find the full driverId from Firebase using the short version
+                        // Search in drivers node for driverId starting with driverIdShort
+                        const driversUrl = `${FIREBASE_DATABASE_URL}/drivers.json`;
+                        const driversResponse = await fetch(driversUrl);
+                        const drivers = await driversResponse.json();
+                        
+                        if (drivers) {
+                            // Find driverId that starts with driverIdShort
+                            const matchingDriverId = Object.keys(drivers).find(id => id.startsWith(driverIdShort));
+                            if (matchingDriverId) {
+                                driverId = matchingDriverId;
+                                console.log('Found full driverId from short version:', { driverIdShort, driverId });
+                            } else {
+                                console.warn('Could not find full driverId for short version:', driverIdShort);
+                                // Fallback: try to get from billCode mapping if we stored it
+                                const mappingUrl = `${FIREBASE_DATABASE_URL}/bill_mappings/${billCode}.json`;
+                                const mappingResponse = await fetch(mappingUrl);
+                                const mapping = await mappingResponse.json();
+                                if (mapping) {
+                                    driverId = mapping.driverId;
+                                    amount = mapping.amount || amount;
+                                    console.log('Retrieved driverId from billCode mapping:', { driverId, amount });
+                                }
+                            }
+                        }
+                        
+                        console.log('Extracted data from reference number:', { reference, driverId, amount, driverIdShort });
+                    } else if (parts.length >= 2) {
+                        // Fallback for simpler format
+                        reference = parts[0];
+                        console.warn('Simple reference format, attempting to get driverId from billCode mapping:', billExternalReferenceNo);
+                        
+                        // Try to get from billCode mapping
+                        const mappingUrl = `${FIREBASE_DATABASE_URL}/bill_mappings/${billCode}.json`;
+                        const mappingResponse = await fetch(mappingUrl);
+                        const mapping = await mappingResponse.json();
+                        if (mapping) {
+                            driverId = mapping.driverId;
+                            amount = mapping.amount;
+                            reference = mapping.reference || reference;
+                            console.log('Retrieved data from billCode mapping:', { driverId, amount, reference });
+                        }
                     } else {
                         reference = billExternalReferenceNo;
-                        console.warn('Simple reference format, missing driverId/amount:', billExternalReferenceNo);
+                        console.warn('Invalid reference format, attempting billCode mapping lookup');
+                        
+                        // Last resort: try billCode mapping
+                        const mappingUrl = `${FIREBASE_DATABASE_URL}/bill_mappings/${billCode}.json`;
+                        const mappingResponse = await fetch(mappingUrl);
+                        const mapping = await mappingResponse.json();
+                        if (mapping) {
+                            driverId = mapping.driverId;
+                            amount = mapping.amount;
+                            reference = mapping.reference || reference;
+                            console.log('Retrieved data from billCode mapping:', { driverId, amount, reference });
+                        }
                     }
                 } catch (e) {
                     console.error('Failed to parse reference number:', e);
+                    
+                    // Fallback: try billCode mapping
+                    try {
+                        const mappingUrl = `${FIREBASE_DATABASE_URL}/bill_mappings/${billCode}.json`;
+                        const mappingResponse = await fetch(mappingUrl);
+                        const mapping = await mappingResponse.json();
+                        if (mapping) {
+                            driverId = mapping.driverId;
+                            amount = mapping.amount;
+                            reference = mapping.reference;
+                            console.log('Fallback: Retrieved data from billCode mapping:', { driverId, amount, reference });
+                        }
+                    } catch (mappingError) {
+                        console.error('Failed to get billCode mapping:', mappingError);
+                    }
                 }
             } else {
-                console.warn('No reference number found in callback - this might cause issues with Firebase update');
+                console.warn('No reference number found in callback - attempting billCode mapping lookup');
+                
+                // Try billCode mapping as fallback
+                try {
+                    const mappingUrl = `${FIREBASE_DATABASE_URL}/bill_mappings/${billCode}.json`;
+                    const mappingResponse = await fetch(mappingUrl);
+                    const mapping = await mappingResponse.json();
+                    if (mapping) {
+                        driverId = mapping.driverId;
+                        amount = mapping.amount;
+                        reference = mapping.reference;
+                        console.log('Retrieved data from billCode mapping (no reference):', { driverId, amount, reference });
+                    }
+                } catch (mappingError) {
+                    console.error('Failed to get billCode mapping:', mappingError);
+                }
             }
             
             // Update Firebase to reduce commission
