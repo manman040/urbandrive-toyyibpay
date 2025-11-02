@@ -237,11 +237,11 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
         });
         
         // Create bill with proper data and remove unnecessary fields
-        // Generate a unique reference number that includes driverId, amount, and timestamp
-        // Format: reference_driverId_amount_timestamp (limited to 50 chars for ToyyibPay)
+        // Generate a unique reference number - keep it simple and short
+        // Format: reference_timestamp (ToyyibPay recommends keeping ref short)
         const timestamp = Date.now();
-        const refParts = [reference || 'REF', driverId.substring(0, 10), amount.toString(), timestamp.toString()];
-        const billExternalReferenceNo = refParts.join('_').substring(0, 50);
+        // Use only reference and timestamp, keep it under 50 chars
+        const billExternalReferenceNo = `${reference || 'REF'}_${timestamp}`.substring(0, 50);
         
         const billData = {
             billTo: billToValue, // Real driver name from Android
@@ -260,9 +260,43 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
             billData.billPhone = '0123456789'; // Fallback
         }
         
+        // Validate and clean fields for ToyyibPay requirements
+        // ToyyibPay field length limits (common limits)
+        if (billData.billName.length > 100) {
+            billData.billName = billData.billName.substring(0, 100);
+            console.warn('billName truncated to 100 characters');
+        }
+        if (billData.billDescription.length > 100) {
+            billData.billDescription = billData.billDescription.substring(0, 100);
+            console.warn('billDescription truncated to 100 characters');
+        }
+        if (billData.billTo.length > 100) {
+            billData.billTo = billData.billTo.substring(0, 100);
+            console.warn('billTo truncated to 100 characters');
+        }
+        if (billData.billEmail.length > 100) {
+            billData.billEmail = billData.billEmail.substring(0, 100);
+            console.warn('billEmail truncated to 100 characters');
+        }
+        if (billData.billPhone.length > 20) {
+            billData.billPhone = billData.billPhone.substring(0, 20);
+            console.warn('billPhone truncated to 20 characters');
+        }
+        if (billData.billExternalReferenceNo.length > 50) {
+            billData.billExternalReferenceNo = billData.billExternalReferenceNo.substring(0, 50);
+            console.warn('billExternalReferenceNo truncated to 50 characters');
+        }
+        
+        // Validate email format (basic check)
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(billData.billEmail)) {
+            console.warn('billEmail format might be invalid:', billData.billEmail);
+        }
+        
         console.log('Final bill data to send to ToyyibPay:', JSON.stringify(billData, null, 2));
         
         // Create ToyyibPay bill using direct HTTP request
+        // Only include fields that are required or have valid values
         const toyyibpayData = {
             userSecretKey: TOYYIBPAY_USER_SECRET_KEY,
             categoryCode: TOYYIBPAY_CATEGORY_CODE,
@@ -280,8 +314,8 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
             billSplitPayment: 0,
             billSplitPaymentArgs: '',
             billPaymentChannel: '0',
-            billContentEmail: billData.billContentEmail,
-            billAdditionalField: billData.billAdditionalField
+            billContentEmail: billData.billContentEmail
+            // Note: Removed billAdditionalField as it's not needed and was causing issues
         };
         
         console.log('Sending to ToyyibPay API:', JSON.stringify(toyyibpayData, null, 2));
@@ -336,6 +370,9 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
             throw new Error(`ToyyibPay API returned HTML error page. Check your credentials and API endpoint. Response: ${responseText.substring(0, 200)}...`);
         }
         
+        // Trim whitespace from response
+        responseText = responseText.trim();
+        
         // Check for ToyyibPay error messages in plain text
         if (responseText.includes('[KEY-DID-NOT-EXIST]')) {
             console.error('ToyyibPay API error: Invalid credentials');
@@ -352,16 +389,24 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
             throw new Error('ToyyibPay API error: Invalid categoryCode. Please check your ToyyibPay category code.');
         }
         
+        // Check for [FALSE] response - this usually means validation failed
+        if (responseText === '[FALSE]' || responseText.includes('[FALSE]')) {
+            console.error('ToyyibPay returned [FALSE] - Validation failed');
+            console.error('Request data that was sent:', JSON.stringify(toyyibpayData, null, 2));
+            throw new Error(`ToyyibPay API validation failed. Common causes: invalid field values, missing required fields, or field length exceeded. Please check: billName, billDescription, billTo, billEmail, billPhone, billExternalReferenceNo. Raw response: ${responseText}`);
+        }
+        
         let result;
         try {
             result = JSON.parse(responseText);
         } catch (parseError) {
             console.error('Failed to parse ToyyibPay response as JSON:', parseError);
-            console.error('Response was:', responseText);
+            console.error('Raw response text:', responseText);
+            console.error('Request that failed:', JSON.stringify(toyyibpayData, null, 2));
             
             // Check if it's a known ToyyibPay error format
             if (responseText.includes('[') && responseText.includes(']')) {
-                throw new Error(`ToyyibPay API error: ${responseText.trim()}`);
+                throw new Error(`ToyyibPay API error: ${responseText}. This usually means invalid data was sent. Check field lengths and required fields.`);
             }
             
             throw new Error(`ToyyibPay API returned invalid JSON: ${responseText.substring(0, 100)}...`);
@@ -460,22 +505,22 @@ app.post('/api/toyyibpay/callback', async (req, res) => {
             
             if (billExternalReferenceNo) {
                 try {
-                    // Parse the reference number format: reference_driverId_amount_timestamp
+                    // Parse the reference number format: reference_timestamp
+                    // Note: For production, we'll need to store driverId and amount separately
+                    // For now, try to extract from reference if possible
                     const parts = billExternalReferenceNo.split('_');
-                    if (parts.length >= 4) {
-                        // New format: reference_driverId_amount_timestamp
+                    if (parts.length >= 2) {
                         reference = parts[0];
-                        driverId = parts[1];
-                        amount = parseFloat(parts[2]);
-                        console.log('Extracted data from reference number:', { driverId, amount, reference, timestamp: parts[3] });
-                    } else if (parts.length >= 3) {
-                        // Fallback for old format: reference_driverId_amount
-                        reference = parts[0];
-                        driverId = parts[1];
-                        amount = parseFloat(parts[2]);
-                        console.log('Extracted data from reference number (old format):', { driverId, amount, reference });
+                        // Timestamp is in parts[1], but we need driverId and amount from elsewhere
+                        // Try to get from request body/query if available
+                        const reqDriverId = req.body.driverId || req.query.driverId;
+                        const reqAmount = req.body.amount || req.query.amount;
+                        if (reqDriverId) driverId = reqDriverId;
+                        if (reqAmount) amount = parseFloat(reqAmount);
+                        console.log('Extracted data from reference number:', { reference, driverId, amount });
                     } else {
-                        console.warn('Invalid reference number format:', billExternalReferenceNo);
+                        reference = billExternalReferenceNo;
+                        console.warn('Simple reference format, missing driverId/amount:', billExternalReferenceNo);
                     }
                 } catch (e) {
                     console.error('Failed to parse reference number:', e);
