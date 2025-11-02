@@ -474,6 +474,39 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
     }
 });
 
+// Function to store billCode mapping for callback retrieval
+async function storeBillCodeMapping(billCode, driverId, amount, reference, billExternalReferenceNo) {
+    try {
+        const mappingData = {
+            driverId: driverId,
+            amount: amount,
+            reference: reference,
+            billExternalReferenceNo: billExternalReferenceNo,
+            createdAt: new Date().toISOString()
+        };
+        
+        const mappingUrl = `${FIREBASE_DATABASE_URL}/bill_mappings/${billCode}.json`;
+        const response = await fetch(mappingUrl, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(mappingData)
+        });
+        
+        if (response.ok) {
+            console.log('BillCode mapping stored successfully:', { billCode, driverId, amount });
+            return true;
+        } else {
+            console.error('Failed to store billCode mapping:', response.status, response.statusText);
+            return false;
+        }
+    } catch (error) {
+        console.error('Error storing billCode mapping:', error);
+        return false;
+    }
+}
+
 // Callback endpoint for ToyyibPay
 app.post('/api/toyyibpay/callback', async (req, res) => {
     try {
