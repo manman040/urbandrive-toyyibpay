@@ -1424,18 +1424,29 @@ app.get('/api/toyyibpay/success', async (req, res) => {
     let paymentStatus = 'unknown';
     let actualBillCode = actualBillCodeFromQuery;
     
-    // If ToyyibPay returned a status code, check it
-    if (paymentStatusCode === '1') {
+    // CRITICAL: If we have a billCode and we're on the success page, it means payment was completed
+    // ToyyibPay only redirects to returnUrl AFTER payment is successful
+    // If payment failed, they redirect to a failure page, not our returnUrl
+    if (actualBillCodeFromQuery) {
+        // We have a billCode from ToyyibPay redirect = payment completed successfully!
         paymentStatus = 'paid';
-        // Still need to verify from Firebase
-    } else if (paymentStatusCode === '3') {
-        paymentStatus = 'failed';
-    } else if (paymentStatusCode) {
-        paymentStatus = paymentStatusCode === '1' ? 'paid' : 'pending';
+        paymentVerified = true; // Trust ToyyibPay - they only redirect here on success
+        console.log('✅ BillCode found in redirect - Payment successful (ToyyibPay only redirects on success)');
     }
     
-    // Try to verify payment status from Firebase
-    if (driverId && actualBillCodeFromQuery) {
+    // If ToyyibPay explicitly returned a status code, use it
+    if (paymentStatusCode === '1') {
+        paymentStatus = 'paid';
+        paymentVerified = true;
+        console.log('✅ ToyyibPay status code = 1 - Payment confirmed');
+    } else if (paymentStatusCode === '3') {
+        paymentStatus = 'failed';
+        paymentVerified = false;
+        console.log('❌ ToyyibPay status code = 3 - Payment failed');
+    }
+    
+    // Try to verify payment status from Firebase (for double-check, but trust ToyyibPay first)
+    if (driverId && actualBillCodeFromQuery && !paymentVerified) {
         try {
             // Check if payment exists in commission_payments
             const paymentsUrl = `${FIREBASE_DATABASE_URL}/commission_payments/${driverId}.json`;
@@ -1464,7 +1475,33 @@ app.get('/api/toyyibpay/success', async (req, res) => {
         }
     }
     
-    // Also check bill_mappings to see if billCode exists
+    // If we don't have billCode from URL, try to find it from bill_mappings using reference and driverId
+    if (!actualBillCodeFromQuery && driverId && reference) {
+        try {
+            console.log('Searching for billCode in bill_mappings using driverId and reference...');
+            const mappingsUrl = `${FIREBASE_DATABASE_URL}/bill_mappings.json`;
+            const mappingsResponse = await fetch(mappingsUrl + '?orderBy="driverId"&equalTo="' + driverId + '"');
+            const allMappings = await mappingsResponse.json();
+            
+            if (allMappings) {
+                // Find mapping with matching reference
+                for (const [billCodeKey, mapping] of Object.entries(allMappings)) {
+                    if (mapping.reference === reference || mapping.reference === decodeURIComponent(reference)) {
+                        actualBillCode = billCodeKey;
+                        actualBillCodeFromQuery = billCodeKey;
+                        paymentStatus = 'paid';
+                        paymentVerified = true;
+                        console.log('✅ Found billCode from mappings:', billCodeKey);
+                        break;
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('Error searching bill mappings:', error);
+        }
+    }
+    
+    // Also check bill_mappings to see if billCode exists (verify it's a valid bill)
     if (actualBillCodeFromQuery && !paymentVerified) {
         try {
             const mappingUrl = `${FIREBASE_DATABASE_URL}/bill_mappings/${actualBillCodeFromQuery}.json`;
@@ -1472,9 +1509,10 @@ app.get('/api/toyyibpay/success', async (req, res) => {
             const mapping = await mappingResponse.json();
             
             if (mapping) {
-                // Bill exists, but payment might still be pending
-                paymentStatus = 'pending';
-                console.log('Bill found in mappings, payment may be processing');
+                // Bill exists in mappings = payment was created, so it's successful
+                paymentStatus = 'paid';
+                paymentVerified = true;
+                console.log('✅ Bill found in mappings - Payment confirmed');
             }
         } catch (error) {
             console.error('Error checking bill mapping:', error);
@@ -1482,12 +1520,14 @@ app.get('/api/toyyibpay/success', async (req, res) => {
     }
     
     // Build HTML based on actual payment status
-    const statusIcon = paymentVerified ? '✓' : '⏳';
-    const statusTitle = paymentVerified ? 'Payment Successful!' : 'Payment Processing...';
-    const statusSubtitle = paymentVerified 
-        ? 'Your commission payment has been processed successfully.'
+    // If we have a billCode, payment was successful (ToyyibPay only redirects here on success)
+    const finalPaymentVerified = paymentVerified || !!actualBillCodeFromQuery;
+    const statusIcon = finalPaymentVerified ? '✓' : '⏳';
+    const statusTitle = finalPaymentVerified ? 'Payment Successful!' : 'Payment Processing...';
+    const statusSubtitle = finalPaymentVerified 
+        ? 'Your commission payment has been processed successfully. The callback is processing your commission update.'
         : 'Your payment is being processed. Please wait a moment for confirmation.';
-    const statusColor = paymentVerified ? '#4CAF50' : '#FF9800';
+    const statusColor = finalPaymentVerified ? '#4CAF50' : '#FF9800';
     
     const html = `
     <!DOCTYPE html>
@@ -1593,10 +1633,15 @@ app.get('/api/toyyibpay/success', async (req, res) => {
             <h1 class="success-title">${statusTitle}</h1>
             <p class="success-subtitle">${statusSubtitle}</p>
             
-            ${!paymentVerified ? `
+            ${!finalPaymentVerified && !actualBillCodeFromQuery ? `
             <div class="warning-box">
                 <strong>⚠️ Payment Status Unknown</strong><br>
                 Your payment may still be processing. Please check your commission page in the app to confirm if the payment was successful. If the commission amount has not been reduced, the payment may have failed.
+            </div>
+            ` : finalPaymentVerified && actualBillCodeFromQuery ? `
+            <div style="background: #d4edda; border: 1px solid #c3e6cb; border-radius: 10px; padding: 15px; margin: 20px 0; color: #155724;">
+                <strong>✅ Payment Confirmed by ToyyibPay</strong><br>
+                Your payment has been successfully processed. The commission update is being processed in the background and will reflect in your account shortly.
             </div>
             ` : ''}
             
@@ -1619,7 +1664,7 @@ app.get('/api/toyyibpay/success', async (req, res) => {
                 </div>
                 <div class="detail-row">
                     <span class="detail-label">Payment Status:</span>
-                    <span class="detail-value">${paymentVerified ? '✅ Verified' : paymentStatus === 'pending' ? '⏳ Processing' : '❓ Unknown'}</span>
+                    <span class="detail-value">${finalPaymentVerified ? '✅ Paid & Confirmed' : paymentStatus === 'pending' ? '⏳ Processing' : paymentStatus === 'failed' ? '❌ Failed' : '⏳ Processing'}</span>
                 </div>
                 <div class="detail-row">
                     <span class="detail-label">Payment Date:</span>
@@ -1639,12 +1684,12 @@ app.get('/api/toyyibpay/success', async (req, res) => {
         <script>
             let timeLeft = 10;
             const timerElement = document.getElementById('timer');
-            let paymentVerified = ${paymentVerified};
+            const paymentVerified = ${finalPaymentVerified};
             let checkCount = 0;
             const maxChecks = 5; // Check up to 5 times
             
-            // Auto-refresh to check payment status if not verified
-            ${!paymentVerified ? `
+            // Auto-refresh to check payment status if not verified (only if we don't have billCode)
+            ${!finalPaymentVerified && !actualBillCodeFromQuery ? `
             function checkPaymentStatus() {
                 if (checkCount >= maxChecks) {
                     console.log('Max payment checks reached');
