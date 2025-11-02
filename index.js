@@ -58,10 +58,17 @@ app.use('/api/toyyibpay/callback', (req, res, next) => {
 // ToyyibPay configuration
 const TOYYIBPAY_USER_SECRET_KEY = process.env.TOYYIBPAY_USER_SECRET_KEY;
 const TOYYIBPAY_CATEGORY_CODE = process.env.TOYYIBPAY_CATEGORY_CODE;
-const TOYYIBPAY_API_URL = 'https://dev.toyyibpay.com/index.php/api/createBill';
+
+// ToyyibPay API URLs - use environment variable or default to production
+// Production: https://toyyibpay.com
+// Development: https://dev.toyyibpay.com
+const TOYYIBPAY_BASE_URL = process.env.TOYYIBPAY_BASE_URL || 'https://toyyibpay.com';
+const TOYYIBPAY_API_URL = `${TOYYIBPAY_BASE_URL}/index.php/api/createBill`;
 
 // Log credentials on startup
 console.log('ToyyibPay Configuration:');
+console.log('Environment:', TOYYIBPAY_BASE_URL.includes('dev') ? 'DEVELOPMENT' : 'PRODUCTION');
+console.log('Base URL:', TOYYIBPAY_BASE_URL);
 console.log('Secret Key:', TOYYIBPAY_USER_SECRET_KEY ? `${TOYYIBPAY_USER_SECRET_KEY.substring(0, 8)}...` : 'MISSING');
 console.log('Category Code:', TOYYIBPAY_CATEGORY_CODE);
 console.log('API URL:', TOYYIBPAY_API_URL);
@@ -76,11 +83,13 @@ app.get('/api/toyyibpay/verify', (req, res) => {
     res.json({
         success: true,
         message: 'ToyyibPay credentials loaded',
+        environment: TOYYIBPAY_BASE_URL.includes('dev') ? 'DEVELOPMENT' : 'PRODUCTION',
         credentials: {
             hasSecretKey: !!TOYYIBPAY_USER_SECRET_KEY,
             hasCategoryCode: !!TOYYIBPAY_CATEGORY_CODE,
             secretKeyPreview: TOYYIBPAY_USER_SECRET_KEY ? `${TOYYIBPAY_USER_SECRET_KEY.substring(0, 8)}...` : 'MISSING',
             categoryCodePreview: TOYYIBPAY_CATEGORY_CODE || 'MISSING',
+            baseUrl: TOYYIBPAY_BASE_URL,
             apiUrl: TOYYIBPAY_API_URL
         },
         timestamp: new Date().toISOString()
@@ -306,7 +315,7 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
             
             // Check for SSL/TLS related errors
             if (fetchError.message.includes('certificate') || fetchError.message.includes('SSL') || fetchError.message.includes('TLS')) {
-                throw new Error(`SSL Certificate Error: Unable to establish secure connection to ToyyibPay API. This is a server-side SSL certificate issue with dev.toyyibpay.com that needs to be resolved by ToyyibPay or your hosting provider. Error: ${fetchError.message}`);
+                throw new Error(`SSL Certificate Error: Unable to establish secure connection to ToyyibPay API. This is a server-side SSL certificate issue with ${TOYYIBPAY_BASE_URL} that needs to be resolved by ToyyibPay or your hosting provider. Error: ${fetchError.message}`);
             }
             
             throw new Error(`Failed to connect to ToyyibPay API: ${fetchError.message}`);
@@ -317,7 +326,7 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
             // Check for Cloudflare SSL error (Error 526)
             if (responseText.includes('Invalid SSL certificate') || responseText.includes('Error code 526')) {
                 console.error('Cloudflare SSL certificate error (526) detected');
-                throw new Error(`Cloudflare SSL Error (526): The ToyyibPay API endpoint (dev.toyyibpay.com) has an invalid SSL certificate. This is a server-side issue that needs to be fixed by ToyyibPay. The connection is being blocked by Cloudflare's security layer. Please contact ToyyibPay support to resolve the SSL certificate issue.`);
+                throw new Error(`Cloudflare SSL Error (526): The ToyyibPay API endpoint (${TOYYIBPAY_BASE_URL}) has an invalid SSL certificate. This is a server-side issue that needs to be fixed by ToyyibPay. The connection is being blocked by Cloudflare's security layer. Please contact ToyyibPay support to resolve the SSL certificate issue.`);
             }
             
             console.error('ToyyibPay returned HTML error page:', responseText.substring(0, 500));
@@ -361,7 +370,7 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
         if (Array.isArray(result) && result.length > 0 && result[0].BillCode) {
             // ToyyibPay returns array format: [{"BillCode":"rp0fcxj8"}]
             const billCode = result[0].BillCode;
-            const paymentUrl = `https://dev.toyyibpay.com/${billCode}`;
+            const paymentUrl = `${TOYYIBPAY_BASE_URL}/${billCode}`;
             
             console.log('Bill created successfully:', { billCode, paymentUrl });
             
@@ -373,7 +382,7 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
             });
         } else if (result && result.billCode) {
             // Alternative format: {"billCode":"rp0fcxj8"}
-            const paymentUrl = `https://dev.toyyibpay.com/${result.billCode}`;
+            const paymentUrl = `${TOYYIBPAY_BASE_URL}/${result.billCode}`;
             
             res.json({
                 success: true,
@@ -686,7 +695,7 @@ app.get('/api/toyyibpay/credential-test', async (req, res) => {
                     success: false,
                     status: 526,
                     error: 'SSL Certificate Error',
-                    message: `Unable to establish secure connection to ToyyibPay API. This is a server-side SSL certificate issue with dev.toyyibpay.com that needs to be resolved by ToyyibPay.`,
+                    message: `Unable to establish secure connection to ToyyibPay API. This is a server-side SSL certificate issue with ${TOYYIBPAY_BASE_URL} that needs to be resolved by ToyyibPay.`,
                     response: fetchError.message,
                     credentials: {
                         hasSecretKey: !!TOYYIBPAY_USER_SECRET_KEY,
@@ -711,7 +720,7 @@ app.get('/api/toyyibpay/credential-test', async (req, res) => {
                     success: false,
                     status: 526,
                     error: 'Cloudflare SSL Error (526)',
-                    message: 'The ToyyibPay API endpoint (dev.toyyibpay.com) has an invalid SSL certificate. This is a server-side issue that needs to be fixed by ToyyibPay. The connection is being blocked by Cloudflare\'s security layer.',
+                    message: `The ToyyibPay API endpoint (${TOYYIBPAY_BASE_URL}) has an invalid SSL certificate. This is a server-side issue that needs to be fixed by ToyyibPay. The connection is being blocked by Cloudflare's security layer.`,
                     response: responseText.substring(0, 500),
                     credentials: {
                         hasSecretKey: !!TOYYIBPAY_USER_SECRET_KEY,
