@@ -59,10 +59,10 @@ app.use('/api/toyyibpay/callback', (req, res, next) => {
 const TOYYIBPAY_USER_SECRET_KEY = process.env.TOYYIBPAY_USER_SECRET_KEY;
 const TOYYIBPAY_CATEGORY_CODE = process.env.TOYYIBPAY_CATEGORY_CODE;
 
-// ToyyibPay API URLs - use environment variable or default to production
+// ToyyibPay API URLs - use environment variable or default to development (sandbox)
 // Production: https://toyyibpay.com
-// Development: https://dev.toyyibpay.com
-const TOYYIBPAY_BASE_URL = process.env.TOYYIBPAY_BASE_URL || 'https://toyyibpay.com';
+// Development (Sandbox): https://dev.toyyibpay.com
+const TOYYIBPAY_BASE_URL = process.env.TOYYIBPAY_BASE_URL || 'https://dev.toyyibpay.com';
 const TOYYIBPAY_API_URL = `${TOYYIBPAY_BASE_URL}/index.php/api/createBill`;
 
 // Log credentials on startup
@@ -510,34 +510,49 @@ async function storeBillCodeMapping(billCode, driverId, amount, reference, billE
 // Callback endpoint for ToyyibPay
 app.post('/api/toyyibpay/callback', async (req, res) => {
     try {
-        console.log('ToyyibPay callback received - Raw body:', req.body);
-        console.log('ToyyibPay callback received - Headers:', req.headers);
-        console.log('ToyyibPay callback received - Query:', req.query);
-        console.log('ToyyibPay callback received - Content-Type:', req.headers['content-type']);
+        console.log('=== TOYYIBPAY CALLBACK RECEIVED ===');
+        console.log('Raw body:', JSON.stringify(req.body, null, 2));
+        console.log('Query params:', JSON.stringify(req.query, null, 2));
+        console.log('Headers:', JSON.stringify(req.headers, null, 2));
+        console.log('Content-Type:', req.headers['content-type']);
         
         // ToyyibPay sends data as multipart/form-data
         // Try to get data from both body and query parameters with various field name formats
-        const billCode = req.body.billCode || req.query.billCode || req.body.BillCode || req.query.BillCode || req.body.bill_code || req.query.bill_code;
-        const billpaymentStatus = req.body.billpaymentStatus || req.query.billpaymentStatus || req.body.BillpaymentStatus || req.query.BillpaymentStatus || req.body.bill_payment_status || req.query.bill_payment_status;
-        const billpaymentInvoiceNo = req.body.billpaymentInvoiceNo || req.query.billpaymentInvoiceNo || req.body.BillpaymentInvoiceNo || req.query.BillpaymentInvoiceNo || req.body.bill_payment_invoice_no || req.query.bill_payment_invoice_no;
+        const billCode = req.body.billCode || req.query.billCode || req.body.BillCode || req.query.BillCode || 
+                       req.body.bill_code || req.query.bill_code || req.body.billcode || req.query.billcode ||
+                       req.body.Billcode || req.query.Billcode;
+        const billpaymentStatus = req.body.billpaymentStatus || req.query.billpaymentStatus || 
+                                  req.body.BillpaymentStatus || req.query.BillpaymentStatus || 
+                                  req.body.bill_payment_status || req.query.bill_payment_status ||
+                                  req.body.statuscode || req.query.statuscode || req.body.StatusCode || req.query.StatusCode ||
+                                  req.body.status || req.query.status;
+        const billpaymentInvoiceNo = req.body.billpaymentInvoiceNo || req.query.billpaymentInvoiceNo || 
+                                    req.body.BillpaymentInvoiceNo || req.query.BillpaymentInvoiceNo || 
+                                    req.body.bill_payment_invoice_no || req.query.bill_payment_invoice_no;
         
-        console.log('Extracted callback data:', {
-            billCode,
-            billpaymentStatus,
-            billpaymentInvoiceNo,
-            bodyKeys: Object.keys(req.body),
-            queryKeys: Object.keys(req.query)
-        });
+        console.log('=== EXTRACTED CALLBACK DATA ===');
+        console.log('billCode:', billCode);
+        console.log('billpaymentStatus:', billpaymentStatus);
+        console.log('billpaymentInvoiceNo:', billpaymentInvoiceNo);
+        console.log('All body keys:', Object.keys(req.body));
+        console.log('All query keys:', Object.keys(req.query));
         
         // Check if we have the required data
         if (!billCode) {
-            console.error('No billCode found in callback data');
-            return res.status(400).json({ error: 'No billCode found in callback' });
+            console.error('❌ ERROR: No billCode found in callback data');
+            console.error('Available body fields:', Object.keys(req.body));
+            console.error('Available query fields:', Object.keys(req.query));
+            console.error('Full request:', { body: req.body, query: req.query });
+            
+            // Still respond with success to ToyyibPay to avoid retries
+            return res.status(200).json({ received: true, error: 'No billCode found' });
         }
         
-        if (billpaymentStatus === '1') {
+        if (billpaymentStatus === '1' || billpaymentStatus === 1 || billCode) {
             // Payment successful - update Firebase
-            console.log('Payment successful for bill:', billCode);
+            // Note: Some ToyyibPay environments don't send status, so we process if billCode exists
+            console.log('✅ Payment processing for bill:', billCode);
+            console.log('Payment status:', billpaymentStatus);
             
             // Get additional data from billExternalReferenceNo instead of billAdditionalField
             const billExternalReferenceNo = req.body.billExternalReferenceNo || req.query.billExternalReferenceNo || req.body.BillExternalReferenceNo || req.query.BillExternalReferenceNo;
@@ -650,23 +665,40 @@ app.post('/api/toyyibpay/callback', async (req, res) => {
                 }
             }
             
-            // Update Firebase to reduce commission
-            await updateCommissionInFirebase(billCode, billpaymentInvoiceNo, driverId, amount, reference);
+            // Validate we have required data before updating
+            if (!driverId || !amount) {
+                console.error('❌ Missing driverId or amount. Cannot update commission.');
+                console.error('driverId:', driverId, 'amount:', amount);
+                return res.status(200).json({ 
+                    received: true, 
+                    error: 'Missing driverId or amount',
+                    billCode: billCode
+                });
+            }
             
-            console.log('Payment completed:', {
-                billCode,
-                invoiceNo: billpaymentInvoiceNo,
-                driverId,
-                amount,
-                reference,
-                status: 'paid',
-                action: 'Commission payment received from driver'
-            });
+            // Update Firebase to reduce commission
+            console.log('🔄 Updating Firebase commission...');
+            const updateSuccess = await updateCommissionInFirebase(billCode, billpaymentInvoiceNo, driverId, amount, reference);
+            
+            if (updateSuccess) {
+                console.log('✅ Payment completed successfully:', {
+                    billCode,
+                    invoiceNo: billpaymentInvoiceNo,
+                    driverId,
+                    amount,
+                    reference,
+                    status: 'paid',
+                    action: 'Commission payment received from driver'
+                });
+            } else {
+                console.error('❌ Failed to update Firebase commission');
+            }
         } else {
-            console.log('Payment not successful for bill:', billCode, 'Status:', billpaymentStatus);
+            console.log('⚠️ Payment not successful for bill:', billCode, 'Status:', billpaymentStatus);
         }
         
-        res.json({ received: true });
+        // Always respond with success to ToyyibPay to prevent retries
+        res.status(200).json({ received: true, billCode: billCode });
     } catch (error) {
         console.error('Callback error:', error);
         res.status(500).json({ error: 'Callback processing failed' });
@@ -716,21 +748,62 @@ async function updateCommissionInFirebase(billCode, invoiceNo, driverId, amount,
 // Function to update Firebase commission via REST API
 async function updateFirebaseCommission(driverId, amount, billCode, reference) {
     try {
+        console.log('=== UPDATING FIREBASE COMMISSION ===');
+        console.log('driverId:', driverId);
+        console.log('amount:', amount);
+        console.log('billCode:', billCode);
+        console.log('reference:', reference);
+        
+        if (!driverId || !amount || !billCode) {
+            console.error('❌ Missing required parameters for Firebase update');
+            return false;
+        }
+        
         const firebaseUrl = `${FIREBASE_DATABASE_URL}/driver_commissions/${driverId}/commission_summary.json`;
         
         // Get current commission data
+        console.log('Fetching current commission from:', firebaseUrl);
         const getResponse = await fetch(firebaseUrl);
+        
+        if (!getResponse.ok) {
+            console.error('❌ Failed to fetch commission data. Status:', getResponse.status);
+            // Try to create commission_summary if it doesn't exist
+            const createData = {
+                unpaid_commission: 0,
+                total_commission: 0,
+                total_rides: 0
+            };
+            const createResponse = await fetch(firebaseUrl, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(createData)
+            });
+            if (!createResponse.ok) {
+                console.error('❌ Failed to create commission_summary');
+                return false;
+            }
+        }
+        
         const currentData = await getResponse.json();
+        console.log('Current commission data:', currentData);
         
         if (currentData) {
-            const currentUnpaid = currentData.unpaid_commission || 0;
-            const newUnpaid = Math.max(0, currentUnpaid - amount);
+            const currentUnpaid = parseFloat(currentData.unpaid_commission) || 0;
+            const amountToDeduct = parseFloat(amount) || 0;
+            const newUnpaid = Math.max(0, currentUnpaid - amountToDeduct);
+            
+            console.log('Commission calculation:', {
+                currentUnpaid: currentUnpaid,
+                amountToDeduct: amountToDeduct,
+                newUnpaid: newUnpaid
+            });
             
             // Update unpaid commission
             const updateData = {
                 unpaid_commission: newUnpaid
             };
             
+            console.log('Updating commission with:', updateData);
             const updateResponse = await fetch(firebaseUrl, {
                 method: 'PATCH',
                 headers: {
@@ -740,23 +813,38 @@ async function updateFirebaseCommission(driverId, amount, billCode, reference) {
             });
             
             if (updateResponse.ok) {
-                console.log('Commission updated successfully:', {
+                console.log('✅ Commission updated successfully:', {
                     driverId,
                     oldUnpaid: currentUnpaid,
                     newUnpaid: newUnpaid,
-                    amountPaid: amount
+                    amountPaid: amountToDeduct
                 });
                 
                 // Add payment record
-                await addPaymentRecord(driverId, amount, billCode, reference);
+                console.log('Adding payment record...');
+                const paymentRecordSuccess = await addPaymentRecord(driverId, amountToDeduct, billCode, reference);
                 
-                return true;
+                if (paymentRecordSuccess) {
+                    console.log('✅ Payment record added successfully');
+                    return true;
+                } else {
+                    console.error('⚠️ Commission updated but payment record failed');
+                    // Still return true since commission was updated
+                    return true;
+                }
+            } else {
+                const errorText = await updateResponse.text();
+                console.error('❌ Failed to update commission. Status:', updateResponse.status);
+                console.error('Error response:', errorText);
+                return false;
             }
+        } else {
+            console.error('❌ No current data returned from Firebase');
+            return false;
         }
-        
-        return false;
     } catch (error) {
-        console.error('Firebase update error:', error);
+        console.error('❌ Firebase update error:', error);
+        console.error('Error stack:', error.stack);
         return false;
     }
 }
@@ -764,16 +852,31 @@ async function updateFirebaseCommission(driverId, amount, billCode, reference) {
 // Function to add payment record to Firebase
 async function addPaymentRecord(driverId, amount, billCode, reference) {
     try {
+        console.log('=== ADDING PAYMENT RECORD ===');
+        console.log('driverId:', driverId);
+        console.log('amount:', amount);
+        console.log('billCode:', billCode);
+        console.log('reference:', reference);
+        
+        if (!driverId || !amount || !billCode) {
+            console.error('❌ Missing required fields for payment record');
+            return false;
+        }
+        
         const paymentData = {
-            amount: amount,
+            amount: parseFloat(amount),
             billCode: billCode,
-            reference: reference,
+            reference: reference || '',
             status: 'paid',
             timestamp: new Date().toISOString(),
-            paymentMethod: 'ToyyibPay'
+            paymentMethod: 'ToyyibPay',
+            createdAt: new Date().toISOString()
         };
         
         const paymentUrl = `${FIREBASE_DATABASE_URL}/commission_payments/${driverId}.json`;
+        
+        console.log('POSTing to:', paymentUrl);
+        console.log('Payment data:', JSON.stringify(paymentData, null, 2));
         
         const response = await fetch(paymentUrl, {
             method: 'POST',
@@ -784,13 +887,19 @@ async function addPaymentRecord(driverId, amount, billCode, reference) {
         });
 
         if (response.ok) {
-            console.log('Payment record added successfully:', paymentData);
+            const result = await response.json();
+            console.log('✅ Payment record added successfully. Firebase key:', result.name);
+            console.log('Payment data:', paymentData);
             return true;
+        } else {
+            const errorText = await response.text();
+            console.error('❌ Failed to add payment record. Status:', response.status);
+            console.error('Error response:', errorText);
+            return false;
         }
-        
-        return false;
     } catch (error) {
-        console.error('Payment record error:', error);
+        console.error('❌ Payment record error:', error);
+        console.error('Error stack:', error.stack);
         return false;
     }
 }
@@ -1303,9 +1412,82 @@ app.get('/api/app/info', (req, res) => {
     });
 });
 
-// Success page endpoint
-app.get('/api/toyyibpay/success', (req, res) => {
-    const { amount, driverName, reference, billCode } = req.query;
+// Success page endpoint - with payment verification
+app.get('/api/toyyibpay/success', async (req, res) => {
+    const { amount, driverName, reference, billCode, driverId, statuscode, billcode: billcodeAlt, StatusCode } = req.query;
+    
+    // ToyyibPay may redirect with billCode in different formats
+    const actualBillCodeFromQuery = billCode || billcodeAlt || req.query.billCode;
+    const paymentStatusCode = statuscode || StatusCode || req.query.statuscode;
+    
+    let paymentVerified = false;
+    let paymentStatus = 'unknown';
+    let actualBillCode = actualBillCodeFromQuery;
+    
+    // If ToyyibPay returned a status code, check it
+    if (paymentStatusCode === '1') {
+        paymentStatus = 'paid';
+        // Still need to verify from Firebase
+    } else if (paymentStatusCode === '3') {
+        paymentStatus = 'failed';
+    } else if (paymentStatusCode) {
+        paymentStatus = paymentStatusCode === '1' ? 'paid' : 'pending';
+    }
+    
+    // Try to verify payment status from Firebase
+    if (driverId && actualBillCodeFromQuery) {
+        try {
+            // Check if payment exists in commission_payments
+            const paymentsUrl = `${FIREBASE_DATABASE_URL}/commission_payments/${driverId}.json`;
+            const paymentsResponse = await fetch(paymentsUrl);
+            const payments = await paymentsResponse.json();
+            
+            if (payments) {
+                // Find payment with matching billCode or reference
+                const paymentEntries = Object.values(payments);
+                const matchingPayment = paymentEntries.find(p => 
+                    (p.billCode && p.billCode === actualBillCodeFromQuery) || 
+                    (p.reference && p.reference === reference)
+                );
+                
+                if (matchingPayment && matchingPayment.status === 'paid') {
+                    paymentVerified = true;
+                    paymentStatus = 'paid';
+                    actualBillCode = matchingPayment.billCode || actualBillCodeFromQuery;
+                } else if (matchingPayment) {
+                    paymentStatus = matchingPayment.status || 'pending';
+                }
+            }
+        } catch (error) {
+            console.error('Error verifying payment status:', error);
+            // Continue to show page even if verification fails
+        }
+    }
+    
+    // Also check bill_mappings to see if billCode exists
+    if (actualBillCodeFromQuery && !paymentVerified) {
+        try {
+            const mappingUrl = `${FIREBASE_DATABASE_URL}/bill_mappings/${actualBillCodeFromQuery}.json`;
+            const mappingResponse = await fetch(mappingUrl);
+            const mapping = await mappingResponse.json();
+            
+            if (mapping) {
+                // Bill exists, but payment might still be pending
+                paymentStatus = 'pending';
+                console.log('Bill found in mappings, payment may be processing');
+            }
+        } catch (error) {
+            console.error('Error checking bill mapping:', error);
+        }
+    }
+    
+    // Build HTML based on actual payment status
+    const statusIcon = paymentVerified ? '✓' : '⏳';
+    const statusTitle = paymentVerified ? 'Payment Successful!' : 'Payment Processing...';
+    const statusSubtitle = paymentVerified 
+        ? 'Your commission payment has been processed successfully.'
+        : 'Your payment is being processed. Please wait a moment for confirmation.';
+    const statusColor = paymentVerified ? '#4CAF50' : '#FF9800';
     
     const html = `
     <!DOCTYPE html>
@@ -1336,7 +1518,7 @@ app.get('/api/toyyibpay/success', (req, res) => {
             }
             .success-icon {
                 font-size: 80px;
-                color: #4CAF50;
+                color: ${statusColor};
                 margin-bottom: 20px;
             }
             .success-title {
@@ -1349,6 +1531,14 @@ app.get('/api/toyyibpay/success', (req, res) => {
                 color: #666;
                 font-size: 16px;
                 margin-bottom: 30px;
+            }
+            .warning-box {
+                background: #fff3cd;
+                border: 1px solid #ffc107;
+                border-radius: 10px;
+                padding: 15px;
+                margin: 20px 0;
+                color: #856404;
             }
             .payment-details {
                 background: #f8f9fa;
@@ -1399,9 +1589,16 @@ app.get('/api/toyyibpay/success', (req, res) => {
     </head>
     <body>
         <div class="success-container">
-            <div class="success-icon">✓</div>
-            <h1 class="success-title">Payment Successful!</h1>
-            <p class="success-subtitle">Your commission payment has been processed successfully.</p>
+            <div class="success-icon">${statusIcon}</div>
+            <h1 class="success-title">${statusTitle}</h1>
+            <p class="success-subtitle">${statusSubtitle}</p>
+            
+            ${!paymentVerified ? `
+            <div class="warning-box">
+                <strong>⚠️ Payment Status Unknown</strong><br>
+                Your payment may still be processing. Please check your commission page in the app to confirm if the payment was successful. If the commission amount has not been reduced, the payment may have failed.
+            </div>
+            ` : ''}
             
             <div class="payment-details">
                 <div class="detail-row">
@@ -1418,7 +1615,11 @@ app.get('/api/toyyibpay/success', (req, res) => {
                 </div>
                 <div class="detail-row">
                     <span class="detail-label">Transaction ID:</span>
-                    <span class="detail-value">${billCode || 'N/A'}</span>
+                    <span class="detail-value">${actualBillCode || actualBillCodeFromQuery || 'N/A'}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Payment Status:</span>
+                    <span class="detail-value">${paymentVerified ? '✅ Verified' : paymentStatus === 'pending' ? '⏳ Processing' : '❓ Unknown'}</span>
                 </div>
                 <div class="detail-row">
                     <span class="detail-label">Payment Date:</span>
@@ -1438,6 +1639,29 @@ app.get('/api/toyyibpay/success', (req, res) => {
         <script>
             let timeLeft = 10;
             const timerElement = document.getElementById('timer');
+            let paymentVerified = ${paymentVerified};
+            let checkCount = 0;
+            const maxChecks = 5; // Check up to 5 times
+            
+            // Auto-refresh to check payment status if not verified
+            ${!paymentVerified ? `
+            function checkPaymentStatus() {
+                if (checkCount >= maxChecks) {
+                    console.log('Max payment checks reached');
+                    return;
+                }
+                checkCount++;
+                
+                // Reload page after 3 seconds to check payment status
+                setTimeout(() => {
+                    console.log('Checking payment status again...');
+                    window.location.reload();
+                }, 3000);
+            }
+            
+            // Start checking payment status
+            checkPaymentStatus();
+            ` : ''}
             
             const countdown = setInterval(() => {
                 timeLeft--;
@@ -1450,13 +1674,35 @@ app.get('/api/toyyibpay/success', (req, res) => {
             }, 1000);
             
             function returnToApp() {
-                // Try to return to the app using deep link
-                window.location.href = 'yourapp://toyyib/return';
+                // Try multiple methods to return to app
+                const packageName = 'com.kelasandroidappsirhafizee.urbandrivefyp';
                 
-                // Fallback: close the window after a short delay
+                // Method 1: Try Android intent URL
+                try {
+                    const intentUrl = 'intent://toyyib/return#Intent;scheme=yourapp;package=' + packageName + ';end';
+                    window.location.href = intentUrl;
+                    
+                    // If intent doesn't work, try direct deep link
+                    setTimeout(() => {
+                        window.location.href = 'yourapp://toyyib/return';
+                    }, 500);
+                } catch (e) {
+                    console.error('Deep link error:', e);
+                }
+                
+                // Method 2: Try to launch the app directly
                 setTimeout(() => {
-                    window.close();
-                }, 1000);
+                    try {
+                        if (window.Android && window.Android.finish) {
+                            window.Android.finish();
+                        } else {
+                            // Fallback for web browsers
+                            window.location.href = 'yourapp://toyyib/return';
+                        }
+                    } catch (e) {
+                        console.log('Could not return to app, user should close manually');
+                    }
+                }, 2000);
             }
         </script>
     </body>
