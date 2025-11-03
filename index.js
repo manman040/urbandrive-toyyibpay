@@ -1733,7 +1733,7 @@ app.get('/api/toyyibpay/success', async (req, res) => {
             </div>
             
             <div class="countdown" id="countdown">
-                Redirecting to commission page in <span id="timer">10</span> seconds...
+                Redirecting to commission page in <span id="timer">5</span> seconds...
             </div>
             
             <button class="return-button" onclick="returnToApp()">
@@ -1742,11 +1742,12 @@ app.get('/api/toyyibpay/success', async (req, res) => {
         </div>
         
         <script>
-            let timeLeft = 10;
+            let timeLeft = 5;
             const timerElement = document.getElementById('timer');
             const paymentVerified = ${finalPaymentVerified};
             let checkCount = 0;
-            const maxChecks = 5; // Check up to 5 times
+            const maxChecks = 5;
+            let redirectAttempted = false;
             
             // Auto-refresh to check payment status if not verified (only if we don't have billCode)
             ${!finalPaymentVerified && !actualBillCodeFromQuery ? `
@@ -1757,14 +1758,12 @@ app.get('/api/toyyibpay/success', async (req, res) => {
                 }
                 checkCount++;
                 
-                // Reload page after 3 seconds to check payment status
                 setTimeout(() => {
                     console.log('Checking payment status again...');
                     window.location.reload();
                 }, 3000);
             }
             
-            // Start checking payment status
             checkPaymentStatus();
             ` : ''}
             
@@ -1774,40 +1773,68 @@ app.get('/api/toyyibpay/success', async (req, res) => {
                 
                 if (timeLeft <= 0) {
                     clearInterval(countdown);
-                    returnToApp();
+                    if (!redirectAttempted) {
+                        returnToApp();
+                    }
                 }
             }, 1000);
             
             function returnToApp() {
-                // Try multiple methods to return to app
+                if (redirectAttempted) {
+                    console.log('Redirect already attempted');
+                    return;
+                }
+                redirectAttempted = true;
+                
                 const packageName = 'com.kelasandroidappsirhafizee.urbandrivefyp';
                 
-                // Method 1: Try Android intent URL
+                console.log('Attempting to return to app:', packageName);
+                
+                // Method 1: Use Android Intent URL (most reliable)
+                const intentUrl = 'intent://toyyib/return#Intent;scheme=yourapp;package=' + packageName + ';end';
+                
+                // Try Intent URL first
                 try {
-                    const intentUrl = 'intent://toyyib/return#Intent;scheme=yourapp;package=' + packageName + ';end';
+                    console.log('Trying Intent URL:', intentUrl);
                     window.location.href = intentUrl;
-                    
-                    // If intent doesn't work, try direct deep link
-                    setTimeout(() => {
-                        window.location.href = 'yourapp://toyyib/return';
-                    }, 500);
                 } catch (e) {
-                    console.error('Deep link error:', e);
+                    console.error('Intent URL failed:', e);
                 }
                 
-                // Method 2: Try to launch the app directly
+                // Method 2: Try direct deep link after short delay
                 setTimeout(() => {
                     try {
-                        if (window.Android && window.Android.finish) {
+                        console.log('Trying deep link: yourapp://toyyib/return');
+                        window.location.href = 'yourapp://toyyib/return';
+                    } catch (e) {
+                        console.error('Deep link failed:', e);
+                    }
+                }, 300);
+                
+                // Method 3: Fallback - try to close window if in WebView
+                setTimeout(() => {
+                    try {
+                        if (window.Android && typeof window.Android.finish === 'function') {
+                            console.log('Using Android finish()');
                             window.Android.finish();
+                        } else if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.close) {
+                            console.log('Using WebKit close');
+                            window.webkit.messageHandlers.close.postMessage('');
                         } else {
-                            // Fallback for web browsers
+                            // Last resort: try deep link again
+                            console.log('Final fallback: trying deep link again');
                             window.location.href = 'yourapp://toyyib/return';
+                            
+                            // If still not working, show message
+                            setTimeout(() => {
+                                document.querySelector('.countdown').innerHTML = 'Please close this page and return to the app manually.';
+                            }, 2000);
                         }
                     } catch (e) {
-                        console.log('Could not return to app, user should close manually');
+                        console.log('All redirect methods failed:', e);
+                        document.querySelector('.countdown').innerHTML = 'Please close this page and return to the app manually.';
                     }
-                }, 2000);
+                }, 1000);
             }
         </script>
     </body>
