@@ -838,6 +838,8 @@ async function updateFirebaseCommission(driverId, amount, billCode, reference) {
                 body: JSON.stringify(updateData)
             });
             
+            const updateResponseText = await updateResponse.text();
+            
             if (updateResponse.ok) {
                 console.log('✅ Commission updated successfully:', {
                     driverId,
@@ -845,6 +847,7 @@ async function updateFirebaseCommission(driverId, amount, billCode, reference) {
                     newUnpaid: newUnpaid,
                     amountPaid: amountToDeduct
                 });
+                console.log('Update response:', updateResponseText);
                 
                 // Add payment record
                 console.log('Adding payment record...');
@@ -859,9 +862,17 @@ async function updateFirebaseCommission(driverId, amount, billCode, reference) {
                     return true;
                 }
             } else {
-                const errorText = await updateResponse.text();
                 console.error('❌ Failed to update commission. Status:', updateResponse.status);
-                console.error('Error response:', errorText);
+                console.error('Error response:', updateResponseText);
+                console.error('Firebase URL:', firebaseUrl);
+                
+                // Check for Firebase-specific errors
+                if (updateResponseText.includes('Permission denied') || updateResponseText.includes('permission')) {
+                    console.error('🚨 FIREBASE SECURITY RULES ERROR: Permission denied!');
+                    console.error('💡 Solution: Update your Firebase rules to allow writes:');
+                    console.error('   { "rules": { ".read": "now < 1798771200000", ".write": "now < 1798771200000" } }');
+                }
+                
                 return false;
             }
         } else {
@@ -899,10 +910,17 @@ async function addPaymentRecord(driverId, amount, billCode, reference) {
             createdAt: new Date().toISOString()
         };
         
-        const paymentUrl = `${FIREBASE_DATABASE_URL}/commission_payments/${driverId}.json`;
+        // Ensure Firebase URL ends with .json and includes auth parameter if needed
+        let paymentUrl = `${FIREBASE_DATABASE_URL}/commission_payments/${driverId}.json`;
+        
+        // Firebase REST API requires .json suffix - ensure it's there
+        if (!paymentUrl.endsWith('.json')) {
+            paymentUrl += '.json';
+        }
         
         console.log('POSTing to:', paymentUrl);
         console.log('Payment data:', JSON.stringify(paymentData, null, 2));
+        console.log('Firebase Database URL:', FIREBASE_DATABASE_URL);
         
         const response = await fetch(paymentUrl, {
             method: 'POST',
@@ -912,15 +930,31 @@ async function addPaymentRecord(driverId, amount, billCode, reference) {
             body: JSON.stringify(paymentData)
         });
 
+        const responseText = await response.text();
+        
         if (response.ok) {
-            const result = await response.json();
+            let result;
+            try {
+                result = JSON.parse(responseText);
+            } catch (e) {
+                result = { name: responseText };
+            }
             console.log('✅ Payment record added successfully. Firebase key:', result.name);
             console.log('Payment data:', paymentData);
+            console.log('Full response:', responseText);
             return true;
         } else {
-            const errorText = await response.text();
             console.error('❌ Failed to add payment record. Status:', response.status);
-            console.error('Error response:', errorText);
+            console.error('Error response:', responseText);
+            console.error('Response headers:', Object.fromEntries(response.headers.entries()));
+            
+            // Check for Firebase-specific errors
+            if (responseText.includes('Permission denied') || responseText.includes('permission')) {
+                console.error('🚨 FIREBASE SECURITY RULES ERROR: Permission denied!');
+                console.error('💡 Solution: Update your Firebase rules to allow writes:');
+                console.error('   { "rules": { ".read": "now < 1798771200000", ".write": "now < 1798771200000" } }');
+            }
+            
             return false;
         }
     } catch (error) {
