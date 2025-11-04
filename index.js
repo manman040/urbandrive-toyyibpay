@@ -1296,12 +1296,17 @@ app.post('/api/settings/:driverId', async (req, res) => {
         const { driverId } = req.params;
         const { settings } = req.body;
         
+        console.log('📝 Updating driver settings:', { driverId, settings });
+        
         const settingsUrl = `${FIREBASE_DATABASE_URL}/driver_settings/${driverId}.json`;
         
         const updateData = {
             ...settings,
             lastUpdated: new Date().toISOString()
         };
+        
+        console.log('🌐 Firebase URL:', settingsUrl);
+        console.log('📋 Update data:', JSON.stringify(updateData, null, 2));
         
         const response = await fetch(settingsUrl, {
             method: 'PUT',
@@ -1311,18 +1316,40 @@ app.post('/api/settings/:driverId', async (req, res) => {
             body: JSON.stringify(updateData)
         });
         
+        const responseText = await response.text();
+        console.log('📤 Firebase response status:', response.status);
+        console.log('📤 Firebase response:', responseText);
+        
         if (response.ok) {
+            console.log('✅ Settings updated successfully');
             res.json({
                 success: true,
                 message: 'Settings updated successfully',
                 settings: updateData
             });
         } else {
-            res.status(500).json({ error: 'Failed to update settings' });
+            console.error('❌ Failed to update settings. Status:', response.status);
+            console.error('❌ Error response:', responseText);
+            
+            // Check for Firebase-specific errors
+            if (responseText.includes('Permission denied') || responseText.includes('permission')) {
+                console.error('🚨 FIREBASE SECURITY RULES ERROR: Permission denied!');
+                console.error('💡 Update Firebase rules to allow writes to driver_settings');
+            }
+            
+            res.status(500).json({ 
+                error: 'Failed to update settings',
+                details: responseText,
+                status: response.status
+            });
         }
     } catch (error) {
-        console.error('Update settings error:', error);
-        res.status(500).json({ error: 'Failed to update settings' });
+        console.error('❌ Update settings error:', error);
+        console.error('Error stack:', error.stack);
+        res.status(500).json({ 
+            error: 'Failed to update settings',
+            message: error.message
+        });
     }
 });
 
