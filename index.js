@@ -10,7 +10,15 @@ dotenv.config();
 
 // Firebase configuration
 const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID;
-const FIREBASE_DATABASE_URL = process.env.FIREBASE_DATABASE_URL;
+// Use the correct Firebase database URL (asia-southeast1 region)
+// If FIREBASE_DATABASE_URL is not set or wrong, use the correct URL from Firebase error message
+let FIREBASE_DATABASE_URL = process.env.FIREBASE_DATABASE_URL || 'https://drive-ab344-default-rtdb.asia-southeast1.firebasedatabase.app';
+
+// Validate and correct the URL if it's pointing to wrong region
+if (!FIREBASE_DATABASE_URL.includes('asia-southeast1')) {
+    console.warn('⚠️ Firebase Database URL is not pointing to asia-southeast1 region. Using correct URL.');
+    FIREBASE_DATABASE_URL = 'https://drive-ab344-default-rtdb.asia-southeast1.firebasedatabase.app';
+}
 
 const app = express();
 app.use(express.json());
@@ -1400,6 +1408,18 @@ app.get('/api/notifications/:driverId', async (req, res) => {
             responseText.includes('Permission denied') ||
             (responseText.startsWith('http') && responseText.includes('firebasedatabase'))) {
             console.error('Firebase returned error message:', responseText.substring(0, 200));
+            
+            // Try to extract correct URL from error response
+            try {
+                const errorJson = JSON.parse(responseText);
+                if (errorJson.correctUrl) {
+                    console.error('⚠️ Firebase suggests correct URL:', errorJson.correctUrl);
+                    console.error('💡 Please update FIREBASE_DATABASE_URL environment variable to:', errorJson.correctUrl);
+                }
+            } catch (e) {
+                // Ignore parse errors
+            }
+            
             return res.json({
                 success: true,
                 notifications: []
