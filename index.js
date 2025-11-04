@@ -705,25 +705,67 @@ app.post('/api/toyyibpay/callback', async (req, res) => {
                 });
             }
             
-            // Update Firebase to reduce commission
-            console.log('🔄 Updating Firebase commission...');
+            // STEP 1: Save payment record to commission_payment FIRST (transaction record)
+            console.log('🔄 STEP 1: Saving payment record to commission_payment...');
+            const paymentRecordSuccess = await addPaymentRecord(driverId, amount, billCode, reference, billpaymentInvoiceNo);
+            
+            if (!paymentRecordSuccess) {
+                console.error('❌❌❌ CRITICAL ERROR: Failed to save payment record!');
+                console.error('❌ Payment will NOT be processed without payment record!');
+                return res.status(200).json({ 
+                    received: true, 
+                    error: 'Failed to save payment record',
+                    billCode: billCode,
+                    processed: false
+                });
+            }
+            
+            console.log('✅ STEP 1 COMPLETE: Payment record saved successfully');
+            
+            // STEP 2: Update commission AFTER payment is recorded
+            console.log('🔄 STEP 2: Updating Firebase commission...');
             const updateSuccess = await updateCommissionInFirebase(billCode, billpaymentInvoiceNo, driverId, amount, reference);
             
-            if (updateSuccess) {
-                console.log('✅ Payment completed successfully:', {
+            if (!updateSuccess) {
+                console.error('❌❌❌ CRITICAL ERROR: Failed to update commission!');
+                console.error('⚠️ Payment record was saved but commission was NOT updated!');
+                console.error('⚠️ Manual intervention may be required to update commission');
+                // Still return success to ToyyibPay since payment was recorded
+                return res.status(200).json({ 
+                    received: true, 
+                    warning: 'Payment recorded but commission update failed',
+                    billCode: billCode,
+                    paymentRecorded: true,
+                    commissionUpdated: false
+                });
+            }
+            
+            console.log('✅ STEP 2 COMPLETE: Commission updated successfully');
+            console.log('✅✅✅ PAYMENT PROCESSING COMPLETE ✅✅✅');
+            console.log('✅ Both operations completed successfully:');
+            console.log('  1. Payment record saved to commission_payment');
+            console.log('  2. Commission updated in driver_commissions');
+            console.log('Payment details:', {
                 billCode,
                 invoiceNo: billpaymentInvoiceNo,
                 driverId,
                 amount,
                 reference,
                 status: 'paid',
-                action: 'Commission payment received from driver'
+                paymentRecorded: true,
+                commissionUpdated: true,
+                location: `commission_payment/${driverId}/`
             });
-                
-                // Payment record is already saved to commission_payment node via addPaymentRecord()
-        } else {
-                console.error('❌ Failed to update Firebase commission');
-            }
+            
+            // Both operations successful - return success
+            return res.status(200).json({ 
+                received: true, 
+                success: true,
+                billCode: billCode,
+                paymentRecorded: true,
+                commissionUpdated: true,
+                message: 'Payment processed successfully'
+            });
         } else {
             console.log('⚠️ Payment not successful for bill:', billCode, 'Status:', billpaymentStatus);
         }
@@ -736,10 +778,10 @@ app.post('/api/toyyibpay/callback', async (req, res) => {
     }
 });
 
-// Function to update Firebase when payment is successful
+// Function to update Firebase commission when payment is successful
 async function updateCommissionInFirebase(billCode, invoiceNo, driverId, amount, reference) {
     try {
-        console.log('Updating Firebase for payment:', {
+        console.log('🔄 Updating Firebase commission for payment:', {
             billCode,
             invoiceNo,
             driverId,
@@ -751,28 +793,32 @@ async function updateCommissionInFirebase(billCode, invoiceNo, driverId, amount,
         
         // Validate required parameters
         if (!driverId) {
-            console.error('No driverId provided for Firebase update');
+            console.error('❌ No driverId provided for Firebase update');
             return false;
         }
         
         if (!amount || amount <= 0) {
-            console.error('Invalid amount provided for Firebase update:', amount);
+            console.error('❌ Invalid amount provided for Firebase update:', amount);
             return false;
         }
         
-        console.log('Processing payment for driver:', driverId, 'Amount:', amount);
+        console.log('📊 Processing commission update for driver:', driverId, 'Amount:', amount);
         
         // Update Firebase commission
         const success = await updateFirebaseCommission(driverId, amount, billCode, reference);
         
         if (success) {
-            console.log('Firebase update completed successfully for bill:', billCode);
+            console.log('✅ Firebase commission updated successfully for bill:', billCode);
+            return true;
         } else {
-            console.error('Firebase update failed for bill:', billCode);
+            console.error('❌ Firebase commission update failed for bill:', billCode);
+            return false;
         }
         
     } catch (error) {
-        console.error('Firebase update error:', error);
+        console.error('❌ Firebase commission update error:', error);
+        console.error('Error stack:', error.stack);
+        return false;
     }
 }
 
@@ -867,18 +913,10 @@ async function updateFirebaseCommission(driverId, amount, billCode, reference) {
                 });
                 console.log('Update response:', updateResponseText);
                 
-                // Add payment record to commission_payment node
-                console.log('Adding payment record to commission_payment...');
-                const paymentRecordSuccess = await addPaymentRecord(driverId, amountToDeduct, billCode, reference, invoiceNo);
-                
-                if (paymentRecordSuccess) {
-                    console.log('✅ Payment record added successfully');
-                    return true;
-                } else {
-                    console.error('⚠️ Commission updated but payment record failed');
-                    // Still return true since commission was updated
+                // Payment record should already be saved in callback before this function
+                // This function only updates commission, payment record is saved separately
+                console.log('✅ Commission updated successfully');
                 return true;
-            }
             } else {
                 console.error('❌ Failed to update commission. Status:', updateResponse.status);
                 console.error('Error response:', updateResponseText);
@@ -943,9 +981,12 @@ async function addPaymentRecord(driverId, amount, billCode, reference, invoiceNo
             paymentUrl += '.json';
         }
         
-        console.log('POSTing to:', paymentUrl);
-        console.log('Payment data:', JSON.stringify(paymentData, null, 2));
-        console.log('Firebase Database URL:', FIREBASE_DATABASE_URL);
+        console.log('📤 POSTing payment record to:', paymentUrl);
+        console.log('📋 Payment data:', JSON.stringify(paymentData, null, 2));
+        console.log('🌐 Firebase Database URL:', FIREBASE_DATABASE_URL);
+        console.log('🔑 Driver ID:', driverId);
+        console.log('💰 Amount:', amount);
+        console.log('🧾 Bill Code:', billCode);
         
         const response = await fetch(paymentUrl, {
             method: 'POST',
@@ -964,23 +1005,35 @@ async function addPaymentRecord(driverId, amount, billCode, reference, invoiceNo
             } catch (e) {
                 result = { name: responseText };
             }
-            console.log('✅ Payment record added successfully. Firebase key:', result.name);
-            console.log('Payment data:', paymentData);
-            console.log('Full response:', responseText);
+            const firebaseKey = result.name || responseText;
+            console.log('✅✅✅ PAYMENT RECORD ADDED SUCCESSFULLY! ✅✅✅');
+            console.log('📝 Firebase key:', firebaseKey);
+            console.log('💰 Amount:', paymentData.amount);
+            console.log('🧾 Bill Code:', paymentData.billCode);
+            console.log('📄 Full response:', responseText);
+            console.log('📍 Location: commission_payment/' + driverId + '/' + firebaseKey);
             return true;
         } else {
-            console.error('❌ Failed to add payment record. Status:', response.status);
+            console.error('❌❌❌ FAILED TO ADD PAYMENT RECORD ❌❌❌');
+            console.error('Status:', response.status);
             console.error('Error response:', responseText);
-            console.error('Response headers:', Object.fromEntries(response.headers.entries()));
+            console.error('URL:', paymentUrl);
+            console.error('Payment data:', JSON.stringify(paymentData, null, 2));
             
             // Check for Firebase-specific errors
             if (responseText.includes('Permission denied') || responseText.includes('permission')) {
-                console.error('🚨 FIREBASE SECURITY RULES ERROR: Permission denied!');
-                console.error('💡 Solution: Update your Firebase rules to allow writes:');
-                console.error('   { "rules": { ".read": "now < 1798771200000", ".write": "now < 1798771200000" } }');
-        }
-        
-        return false;
+                console.error('🚨🚨🚨 FIREBASE SECURITY RULES ERROR: Permission denied! 🚨🚨🚨');
+                console.error('💡 The commission_payment node needs write permission!');
+                console.error('💡 Update Firebase rules to allow writes to commission_payment');
+                console.error('💡 Current URL:', paymentUrl);
+            }
+            
+            // Check if it's a network error
+            if (response.status === 0 || response.status >= 500) {
+                console.error('🚨 Network or server error. Firebase might be down.');
+            }
+            
+            return false;
         }
     } catch (error) {
         console.error('❌ Payment record error:', error);
@@ -997,9 +1050,53 @@ app.get('/api/toyyibpay/test', (req, res) => {
         environment: {
             hasSecretKey: !!TOYYIBPAY_USER_SECRET_KEY,
             hasCategoryCode: !!TOYYIBPAY_CATEGORY_CODE,
-            apiUrl: TOYYIBPAY_API_URL
+            apiUrl: TOYYIBPAY_API_URL,
+            firebaseUrl: FIREBASE_DATABASE_URL
         }
     });
+});
+
+// Test endpoint to verify commission_payment write
+app.post('/api/test/payment-record', async (req, res) => {
+    try {
+        const { driverId, amount, billCode } = req.body;
+        
+        if (!driverId || !amount || !billCode) {
+            return res.status(400).json({
+                success: false,
+                error: "driverId, amount, and billCode are required",
+                received: { driverId, amount, billCode }
+            });
+        }
+        
+        console.log('🧪 Testing payment record save...');
+        console.log('Test data:', { driverId, amount, billCode });
+        
+        const testResult = await addPaymentRecord(driverId, amount, billCode, 'TEST_REF', 'TEST_INV');
+        
+        if (testResult) {
+            res.json({
+                success: true,
+                message: "Payment record saved successfully",
+                location: `commission_payment/${driverId}/`,
+                firebaseUrl: FIREBASE_DATABASE_URL
+            });
+        } else {
+            res.status(500).json({
+                success: false,
+                error: "Failed to save payment record",
+                check: "Check server logs for details",
+                firebaseUrl: FIREBASE_DATABASE_URL
+            });
+        }
+    } catch (error) {
+        console.error('Test endpoint error:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message,
+            stack: error.stack
+        });
+    }
 });
 
 // Credential test endpoint
