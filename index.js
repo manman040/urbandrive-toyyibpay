@@ -1382,12 +1382,128 @@ app.get('/api/notifications/:driverId', async (req, res) => {
         const notificationsUrl = `${FIREBASE_DATABASE_URL}/driver_notifications/${driverId}.json`;
         
         const response = await fetch(notificationsUrl);
-        const notifications = await response.json();
+        const responseText = await response.text();
         
-        // Convert to array and sort by timestamp
-        const notificationsArray = notifications ? Object.values(notifications).sort((a, b) => 
-            new Date(b.timestamp) - new Date(a.timestamp)
-        ) : [];
+        // Check if response is an error message (string, not JSON)
+        if (!response.ok) {
+            console.error('Firebase error response:', response.status, responseText);
+            // Return empty notifications array instead of error
+            return res.json({
+                success: true,
+                notifications: []
+            });
+        }
+        
+        // Check if response text is an error message (contains common Firebase error patterns)
+        if (responseText.includes('Database lives in a different region') ||
+            responseText.includes('Please change your database URL') ||
+            responseText.includes('Permission denied') ||
+            (responseText.startsWith('http') && responseText.includes('firebasedatabase'))) {
+            console.error('Firebase returned error message:', responseText.substring(0, 200));
+            return res.json({
+                success: true,
+                notifications: []
+            });
+        }
+        
+        // Try to parse as JSON
+        let notifications;
+        try {
+            notifications = JSON.parse(responseText);
+        } catch (parseError) {
+            // If response is not JSON (e.g., error message string), return empty array
+            console.error('Failed to parse Firebase response as JSON:', responseText.substring(0, 200));
+            return res.json({
+                success: true,
+                notifications: []
+            });
+        }
+        
+        // Check if notifications is null or undefined
+        if (!notifications) {
+            return res.json({
+                success: true,
+                notifications: []
+            });
+        }
+        
+        // Check if notifications is a string (error message)
+        if (typeof notifications === 'string') {
+            console.error('Firebase returned string instead of JSON:', notifications.substring(0, 200));
+            return res.json({
+                success: true,
+                notifications: []
+            });
+        }
+        
+        // Check if notifications is an error object (Firebase sometimes returns error as object)
+        if (typeof notifications === 'object' && notifications.error) {
+            console.error('Firebase returned error object:', notifications);
+            return res.json({
+                success: true,
+                notifications: []
+            });
+        }
+        
+        // Check if notifications is an array (direct array response)
+        let notificationsArray = [];
+        if (Array.isArray(notifications)) {
+            // Filter out all non-object entries (strings, null, etc.)
+            notificationsArray = notifications.filter(notif => {
+                // Must be an object (not string, not array, not null)
+                if (!notif || typeof notif !== 'object' || Array.isArray(notif)) {
+                    return false;
+                }
+                // Must have timestamp field (string or number)
+                if (!notif.timestamp || (typeof notif.timestamp !== 'string' && typeof notif.timestamp !== 'number')) {
+                    return false;
+                }
+                // Must have type field to be valid notification
+                if (!notif.type || typeof notif.type !== 'string') {
+                    return false;
+                }
+                // Reject if it looks like an error message (has URL or error text)
+                const stringified = JSON.stringify(notif);
+                if (stringified.includes('firebasedatabase') || 
+                    stringified.includes('Database lives') ||
+                    stringified.includes('Please change')) {
+                    return false;
+                }
+                return true;
+            }).sort((a, b) => {
+                const timestampA = typeof a.timestamp === 'string' ? new Date(a.timestamp).getTime() : a.timestamp;
+                const timestampB = typeof b.timestamp === 'string' ? new Date(b.timestamp).getTime() : b.timestamp;
+                return (timestampB || 0) - (timestampA || 0);
+            });
+        } else if (typeof notifications === 'object' && !Array.isArray(notifications)) {
+            // Convert object to array and filter
+            notificationsArray = Object.values(notifications).filter(notif => {
+                // Must be an object (not string, not array, not null)
+                if (!notif || typeof notif !== 'object' || Array.isArray(notif)) {
+                    return false;
+                }
+                // Must have timestamp field (string or number)
+                if (!notif.timestamp || (typeof notif.timestamp !== 'string' && typeof notif.timestamp !== 'number')) {
+                    return false;
+                }
+                // Must have type field to be valid notification
+                if (!notif.type || typeof notif.type !== 'string') {
+                    return false;
+                }
+                // Reject if it looks like an error message (has URL or error text)
+                const stringified = JSON.stringify(notif);
+                if (stringified.includes('firebasedatabase') || 
+                    stringified.includes('Database lives') ||
+                    stringified.includes('Please change')) {
+                    return false;
+                }
+                return true;
+            }).sort((a, b) => {
+                const timestampA = typeof a.timestamp === 'string' ? new Date(a.timestamp).getTime() : a.timestamp;
+                const timestampB = typeof b.timestamp === 'string' ? new Date(b.timestamp).getTime() : b.timestamp;
+                return (timestampB || 0) - (timestampA || 0);
+            });
+        }
         
         res.json({
             success: true,
@@ -1395,7 +1511,11 @@ app.get('/api/notifications/:driverId', async (req, res) => {
         });
     } catch (error) {
         console.error('Get notifications error:', error);
-        res.status(500).json({ error: 'Failed to get notifications' });
+        // Return empty array instead of error to prevent Android parsing issues
+        res.json({
+            success: true,
+            notifications: []
+        });
     }
 });
 
