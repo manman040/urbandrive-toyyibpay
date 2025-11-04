@@ -11,14 +11,22 @@ dotenv.config();
 // Firebase configuration
 const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID;
 // Use the correct Firebase database URL (asia-southeast1 region)
-// If FIREBASE_DATABASE_URL is not set or wrong, use the correct URL from Firebase error message
-let FIREBASE_DATABASE_URL = process.env.FIREBASE_DATABASE_URL || 'https://drive-ab344-default-rtdb.asia-southeast1.firebasedatabase.app';
+// CRITICAL: Firebase database URL must match the actual region
+const CORRECT_FIREBASE_URL = 'https://drive-ab344-default-rtdb.asia-southeast1.firebasedatabase.app';
+let FIREBASE_DATABASE_URL = process.env.FIREBASE_DATABASE_URL || CORRECT_FIREBASE_URL;
 
 // Validate and correct the URL if it's pointing to wrong region
-if (!FIREBASE_DATABASE_URL.includes('asia-southeast1')) {
-    console.warn('⚠️ Firebase Database URL is not pointing to asia-southeast1 region. Using correct URL.');
-    FIREBASE_DATABASE_URL = 'https://drive-ab344-default-rtdb.asia-southeast1.firebasedatabase.app';
+if (!FIREBASE_DATABASE_URL || 
+    !FIREBASE_DATABASE_URL.includes('asia-southeast1') || 
+    FIREBASE_DATABASE_URL !== CORRECT_FIREBASE_URL) {
+    console.warn('⚠️ Firebase Database URL is incorrect or pointing to wrong region.');
+    console.warn('⚠️ Current URL:', FIREBASE_DATABASE_URL);
+    console.warn('⚠️ Using correct URL:', CORRECT_FIREBASE_URL);
+    console.warn('💡 Please update FIREBASE_DATABASE_URL environment variable to:', CORRECT_FIREBASE_URL);
+    FIREBASE_DATABASE_URL = CORRECT_FIREBASE_URL;
 }
+
+console.log('✅ Using Firebase Database URL:', FIREBASE_DATABASE_URL);
 
 const app = express();
 app.use(express.json());
@@ -1468,20 +1476,47 @@ app.get('/api/notifications/:driverId', async (req, res) => {
         // Check if notifications is an array (direct array response)
         let notificationsArray = [];
         if (Array.isArray(notifications)) {
+            // Check if array contains only error messages (strings)
+            const hasOnlyErrorStrings = notifications.every(item => 
+                typeof item === 'string' && (
+                    item.includes('firebasedatabase') ||
+                    item.includes('Database lives') ||
+                    item.includes('Please change') ||
+                    item.startsWith('http')
+                )
+            );
+            
+            if (hasOnlyErrorStrings) {
+                console.error('⚠️ Firebase returned array of error strings:', notifications);
+                return res.json({
+                    success: true,
+                    notifications: []
+                });
+            }
+            
             // Filter out all non-object entries (strings, null, etc.)
-            notificationsArray = notifications.filter(notif => {
-                // Must be an object (not string, not array, not null)
+            notificationsArray = notifications.filter((notif, index) => {
+                // First check: Must be an object (not string, not array, not null)
+                if (typeof notif === 'string') {
+                    // Log and reject any string entries
+                    console.warn(`⚠️ Filtering out string at index ${index}:`, notif.substring(0, 100));
+                    return false;
+                }
+                
                 if (!notif || typeof notif !== 'object' || Array.isArray(notif)) {
                     return false;
                 }
+                
                 // Must have timestamp field (string or number)
                 if (!notif.timestamp || (typeof notif.timestamp !== 'string' && typeof notif.timestamp !== 'number')) {
                     return false;
                 }
+                
                 // Must have type field to be valid notification
                 if (!notif.type || typeof notif.type !== 'string') {
                     return false;
                 }
+                
                 // Reject if it looks like an error message (has URL or error text)
                 const stringified = JSON.stringify(notif);
                 if (stringified.includes('firebasedatabase') || 
@@ -1489,6 +1524,7 @@ app.get('/api/notifications/:driverId', async (req, res) => {
                     stringified.includes('Please change')) {
                     return false;
                 }
+                
                 return true;
             }).sort((a, b) => {
                 const timestampA = typeof a.timestamp === 'string' ? new Date(a.timestamp).getTime() : a.timestamp;
@@ -1497,19 +1533,28 @@ app.get('/api/notifications/:driverId', async (req, res) => {
             });
         } else if (typeof notifications === 'object' && !Array.isArray(notifications)) {
             // Convert object to array and filter
-            notificationsArray = Object.values(notifications).filter(notif => {
-                // Must be an object (not string, not array, not null)
+            notificationsArray = Object.values(notifications).filter((notif, index) => {
+                // First check: Must be an object (not string, not array, not null)
+                if (typeof notif === 'string') {
+                    // Log and reject any string entries
+                    console.warn(`⚠️ Filtering out string at index ${index}:`, notif.substring(0, 100));
+                    return false;
+                }
+                
                 if (!notif || typeof notif !== 'object' || Array.isArray(notif)) {
                     return false;
                 }
+                
                 // Must have timestamp field (string or number)
                 if (!notif.timestamp || (typeof notif.timestamp !== 'string' && typeof notif.timestamp !== 'number')) {
                     return false;
                 }
+                
                 // Must have type field to be valid notification
                 if (!notif.type || typeof notif.type !== 'string') {
                     return false;
                 }
+                
                 // Reject if it looks like an error message (has URL or error text)
                 const stringified = JSON.stringify(notif);
                 if (stringified.includes('firebasedatabase') || 
@@ -1517,12 +1562,41 @@ app.get('/api/notifications/:driverId', async (req, res) => {
                     stringified.includes('Please change')) {
                     return false;
                 }
+                
                 return true;
             }).sort((a, b) => {
                 const timestampA = typeof a.timestamp === 'string' ? new Date(a.timestamp).getTime() : a.timestamp;
                 const timestampB = typeof b.timestamp === 'string' ? new Date(b.timestamp).getTime() : b.timestamp;
                 return (timestampB || 0) - (timestampA || 0);
             });
+        }
+        
+        // Final safety check: Ensure no strings are in the array
+        if (Array.isArray(notificationsArray)) {
+            const hasStrings = notificationsArray.some(item => typeof item === 'string');
+            if (hasStrings) {
+                console.error('⚠️ ERROR: Array still contains strings after filtering! Filtering again...');
+                notificationsArray = notificationsArray.filter(item => typeof item !== 'string');
+            }
+            
+            // Double-check: Verify all items are valid notification objects
+            notificationsArray = notificationsArray.filter(item => {
+                if (!item || typeof item !== 'object' || Array.isArray(item)) {
+                    console.warn('⚠️ Filtering out invalid item:', typeof item);
+                    return false;
+                }
+                if (!item.timestamp || !item.type) {
+                    console.warn('⚠️ Filtering out item missing required fields:', Object.keys(item));
+                    return false;
+                }
+                return true;
+            });
+            
+            // Log final array for debugging
+            console.log(`✅ Returning ${notificationsArray.length} valid notifications`);
+        } else {
+            console.warn('⚠️ notificationsArray is not an array, returning empty array');
+            notificationsArray = [];
         }
         
         res.json({
