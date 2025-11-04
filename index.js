@@ -662,11 +662,11 @@ app.post('/api/toyyibpay/callback', async (req, res) => {
             if (!driverId || !amount) {
                 console.warn('⚠️ bill_mappings didn\'t have complete data, trying billExternalReferenceNo...');
                 billExternalReferenceNo = req.body.billExternalReferenceNo || req.query.billExternalReferenceNo || req.body.BillExternalReferenceNo || req.query.BillExternalReferenceNo;
-                
-                if (billExternalReferenceNo) {
-                    try {
+            
+            if (billExternalReferenceNo) {
+                try {
                         // Parse the reference number format: reference_driverIdShort_amount_timestamp
-                        const parts = billExternalReferenceNo.split('_');
+                    const parts = billExternalReferenceNo.split('_');
                         if (parts.length >= 4) {
                             // New format: reference_driverIdShort_amount_timestamp
                             if (!reference) reference = parts[0];
@@ -687,10 +687,10 @@ app.post('/api/toyyibpay/callback', async (req, res) => {
                                     }
                                 }
                             }
-                        }
-                    } catch (e) {
-                        console.error('Failed to parse reference number:', e);
                     }
+                } catch (e) {
+                    console.error('Failed to parse reference number:', e);
+                }
                 }
             }
             
@@ -711,15 +711,17 @@ app.post('/api/toyyibpay/callback', async (req, res) => {
             
             if (updateSuccess) {
                 console.log('✅ Payment completed successfully:', {
-                    billCode,
-                    invoiceNo: billpaymentInvoiceNo,
-                    driverId,
-                    amount,
-                    reference,
-                    status: 'paid',
-                    action: 'Commission payment received from driver'
-                });
-            } else {
+                billCode,
+                invoiceNo: billpaymentInvoiceNo,
+                driverId,
+                amount,
+                reference,
+                status: 'paid',
+                action: 'Commission payment received from driver'
+            });
+                
+                // Payment record is already saved to commission_payment node via addPaymentRecord()
+        } else {
                 console.error('❌ Failed to update Firebase commission');
             }
         } else {
@@ -865,9 +867,9 @@ async function updateFirebaseCommission(driverId, amount, billCode, reference) {
                 });
                 console.log('Update response:', updateResponseText);
                 
-                // Add payment record
-                console.log('Adding payment record...');
-                const paymentRecordSuccess = await addPaymentRecord(driverId, amountToDeduct, billCode, reference);
+                // Add payment record to commission_payment node
+                console.log('Adding payment record to commission_payment...');
+                const paymentRecordSuccess = await addPaymentRecord(driverId, amountToDeduct, billCode, reference, invoiceNo);
                 
                 if (paymentRecordSuccess) {
                     console.log('✅ Payment record added successfully');
@@ -875,8 +877,8 @@ async function updateFirebaseCommission(driverId, amount, billCode, reference) {
                 } else {
                     console.error('⚠️ Commission updated but payment record failed');
                     // Still return true since commission was updated
-                    return true;
-                }
+                return true;
+            }
             } else {
                 console.error('❌ Failed to update commission. Status:', updateResponse.status);
                 console.error('Error response:', updateResponseText);
@@ -887,9 +889,9 @@ async function updateFirebaseCommission(driverId, amount, billCode, reference) {
                     console.error('🚨 FIREBASE SECURITY RULES ERROR: Permission denied!');
                     console.error('💡 Solution: Update your Firebase rules to allow writes:');
                     console.error('   { "rules": { ".read": "now < 1798771200000", ".write": "now < 1798771200000" } }');
-                }
-                
-                return false;
+        }
+        
+        return false;
             }
         } else {
             console.error('❌ No current data returned from Firebase');
@@ -902,32 +904,39 @@ async function updateFirebaseCommission(driverId, amount, billCode, reference) {
     }
 }
 
-// Function to add payment record to Firebase
-async function addPaymentRecord(driverId, amount, billCode, reference) {
+// Function to add payment record to commission_payment node in Firebase
+async function addPaymentRecord(driverId, amount, billCode, reference, invoiceNo = null) {
     try {
-        console.log('=== ADDING PAYMENT RECORD ===');
+        console.log('=== ADDING PAYMENT RECORD TO commission_payment ===');
         console.log('driverId:', driverId);
         console.log('amount:', amount);
         console.log('billCode:', billCode);
         console.log('reference:', reference);
+        console.log('invoiceNo:', invoiceNo);
         
         if (!driverId || !amount || !billCode) {
             console.error('❌ Missing required fields for payment record');
             return false;
         }
         
+        // Generate unique payment transaction ID
+        const paymentId = `payment_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        
         const paymentData = {
             amount: parseFloat(amount),
             billCode: billCode,
             reference: reference || '',
+            invoiceNo: invoiceNo || null,
             status: 'paid',
+            paymentId: paymentId,
             timestamp: new Date().toISOString(),
             paymentMethod: 'ToyyibPay',
             createdAt: new Date().toISOString()
         };
         
-        // Ensure Firebase URL ends with .json and includes auth parameter if needed
-        let paymentUrl = `${FIREBASE_DATABASE_URL}/commission_payments/${driverId}.json`;
+        // Save to commission_payment node (singular as per user's Firebase structure)
+        // Use commission_payment/{driverId} to store all payment transactions
+        let paymentUrl = `${FIREBASE_DATABASE_URL}/commission_payment/${driverId}.json`;
         
         // Firebase REST API requires .json suffix - ensure it's there
         if (!paymentUrl.endsWith('.json')) {
@@ -947,7 +956,7 @@ async function addPaymentRecord(driverId, amount, billCode, reference) {
         });
 
         const responseText = await response.text();
-        
+
         if (response.ok) {
             let result;
             try {
@@ -969,9 +978,9 @@ async function addPaymentRecord(driverId, amount, billCode, reference) {
                 console.error('🚨 FIREBASE SECURITY RULES ERROR: Permission denied!');
                 console.error('💡 Solution: Update your Firebase rules to allow writes:');
                 console.error('   { "rules": { ".read": "now < 1798771200000", ".write": "now < 1798771200000" } }');
-            }
-            
-            return false;
+        }
+        
+        return false;
         }
     } catch (error) {
         console.error('❌ Payment record error:', error);
@@ -1038,15 +1047,15 @@ app.get('/api/toyyibpay/credential-test', async (req, res) => {
         
         try {
             response = await fetch(TOYYIBPAY_API_URL, {
-                method: 'POST',
-                // Remove Content-Type header to let fetch set the correct boundary
-                body: formData
-            });
-            
+            method: 'POST',
+            // Remove Content-Type header to let fetch set the correct boundary
+            body: formData
+        });
+        
             responseText = await response.text();
-            console.log('ToyyibPay test response:', responseText);
-            console.log('ToyyibPay test status:', response.status);
-            console.log('ToyyibPay test headers:', response.headers);
+        console.log('ToyyibPay test response:', responseText);
+        console.log('ToyyibPay test status:', response.status);
+        console.log('ToyyibPay test headers:', response.headers);
         } catch (fetchError) {
             console.error('Credential test fetch error:', fetchError);
             
@@ -1988,7 +1997,7 @@ app.get('/api/toyyibpay/success', async (req, res) => {
                 if (timeLeft <= 0) {
                     clearInterval(countdown);
                     if (!redirectAttempted) {
-                        returnToApp();
+                    returnToApp();
                     }
                 }
             }, 1000);
@@ -2019,7 +2028,7 @@ app.get('/api/toyyibpay/success', async (req, res) => {
                 setTimeout(() => {
                     try {
                         console.log('Trying deep link: yourapp://toyyib/return');
-                        window.location.href = 'yourapp://toyyib/return';
+                window.location.href = 'yourapp://toyyib/return';
                     } catch (e) {
                         console.error('Deep link failed:', e);
                     }
