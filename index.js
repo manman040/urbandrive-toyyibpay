@@ -2191,6 +2191,146 @@ app.get('/api/toyyibpay/success', async (req, res) => {
     res.send(html);
 });
 
+// Send OTP Email endpoint
+app.post('/api/otp/send-email', async (req, res) => {
+    try {
+        const { email, otp } = req.body;
+        
+        if (!email || !otp) {
+            return res.status(400).json({ 
+                success: false, 
+                error: 'Email and OTP are required' 
+            });
+        }
+        
+        // Email subject and body
+        const subject = 'Urban Drive - Password Reset OTP';
+        const htmlBody = `
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <style>
+                    body { font-family: Arial, sans-serif; }
+                    .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+                    .header { background-color: #F44309; color: white; padding: 20px; text-align: center; }
+                    .content { padding: 20px; background-color: #f9f9f9; }
+                    .otp-box { background-color: #fff; border: 2px solid #F44309; padding: 20px; text-align: center; margin: 20px 0; }
+                    .otp-code { font-size: 32px; font-weight: bold; color: #F44309; letter-spacing: 5px; }
+                    .footer { padding: 20px; text-align: center; color: #666; font-size: 12px; }
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <div class="header">
+                        <h1>Urban Drive</h1>
+                    </div>
+                    <div class="content">
+                        <h2>Password Reset OTP</h2>
+                        <p>Hello,</p>
+                        <p>You have requested to reset your password. Please use the following OTP code:</p>
+                        <div class="otp-box">
+                            <div class="otp-code">${otp}</div>
+                        </div>
+                        <p>This OTP will expire in 10 minutes.</p>
+                        <p>If you did not request this password reset, please ignore this email.</p>
+                    </div>
+                    <div class="footer">
+                        <p>© ${new Date().getFullYear()} Urban Drive. All rights reserved.</p>
+                    </div>
+                </div>
+            </body>
+            </html>
+        `;
+        
+        const textBody = `
+Urban Drive - Password Reset OTP
+
+Hello,
+
+You have requested to reset your password. Please use the following OTP code:
+
+${otp}
+
+This OTP will expire in 10 minutes.
+
+If you did not request this password reset, please ignore this email.
+
+© ${new Date().getFullYear()} Urban Drive. All rights reserved.
+        `;
+        
+        // Try to send email using nodemailer if available
+        // Otherwise, log the OTP (for development/testing)
+        try {
+            // Check if nodemailer is available
+            const nodemailer = await import('nodemailer').catch(() => null);
+            
+            if (nodemailer && process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
+                // Configure email transporter
+                const transporter = nodemailer.createTransport({
+                    host: process.env.SMTP_HOST,
+                    port: process.env.SMTP_PORT || 587,
+                    secure: process.env.SMTP_SECURE === 'true',
+                    auth: {
+                        user: process.env.SMTP_USER,
+                        pass: process.env.SMTP_PASS
+                    }
+                });
+                
+                // Send email
+                const mailOptions = {
+                    from: process.env.SMTP_FROM || process.env.SMTP_USER,
+                    to: email,
+                    subject: subject,
+                    text: textBody,
+                    html: htmlBody
+                };
+                
+                await transporter.sendMail(mailOptions);
+                console.log(`OTP email sent successfully to: ${email}`);
+                
+                return res.json({
+                    success: true,
+                    message: 'OTP email sent successfully'
+                });
+            } else {
+                // No email service configured - log OTP for development
+                console.log('='.repeat(50));
+                console.log('📧 OTP EMAIL (Email service not configured)');
+                console.log('='.repeat(50));
+                console.log(`To: ${email}`);
+                console.log(`Subject: ${subject}`);
+                console.log(`OTP Code: ${otp}`);
+                console.log('='.repeat(50));
+                console.log('⚠️  To enable email sending, configure SMTP environment variables:');
+                console.log('   SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM');
+                console.log('='.repeat(50));
+                
+                // Return success even without email service (for development)
+                return res.json({
+                    success: true,
+                    message: 'OTP generated successfully (email service not configured - check server logs for OTP)',
+                    otp: otp // Include OTP in response for development/testing
+                });
+            }
+        } catch (emailError) {
+            console.error('Error sending email:', emailError);
+            // Still return success if OTP was generated (stored in Firebase)
+            return res.json({
+                success: true,
+                message: 'OTP generated successfully (email sending failed - check server logs)',
+                error: emailError.message
+            });
+        }
+    } catch (error) {
+        console.error('Send OTP email error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: 'Failed to send OTP email',
+            message: error.message 
+        });
+    }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
