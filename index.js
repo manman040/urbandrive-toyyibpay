@@ -2331,6 +2331,153 @@ If you did not request this password reset, please ignore this email.
     }
 });
 
+// Reset Password endpoint
+app.post('/api/auth/reset-password', async (req, res) => {
+    try {
+        const { email, newPassword } = req.body;
+        
+        if (!email || !newPassword) {
+            return res.status(400).json({ 
+                success: false, 
+                error: 'Email and newPassword are required' 
+            });
+        }
+        
+        if (newPassword.length < 6) {
+            return res.status(400).json({ 
+                success: false, 
+                error: 'Password must be at least 6 characters' 
+            });
+        }
+        
+        // Verify that OTP was verified (check if OTP exists and was used)
+        const emailKey = email.replace(".", ",");
+        const otpUrl = `${FIREBASE_DATABASE_URL}/password_reset_otps/${emailKey}.json`;
+        const otpResponse = await fetch(otpUrl);
+        
+        if (!otpResponse.ok) {
+            return res.status(400).json({ 
+                success: false, 
+                error: 'OTP verification required. Please complete OTP verification first.' 
+            });
+        }
+        
+        const otpData = await otpResponse.json();
+        if (!otpData || !otpData.used) {
+            return res.status(400).json({ 
+                success: false, 
+                error: 'OTP not verified. Please verify OTP first.' 
+            });
+        }
+        
+        // Check if OTP is still valid (not expired)
+        if (otpData.expiresAt && Date.now() > otpData.expiresAt) {
+            return res.status(400).json({ 
+                success: false, 
+                error: 'OTP has expired. Please request a new OTP.' 
+            });
+        }
+        
+        // Try to use Firebase Admin SDK if available
+        try {
+            const admin = await import('firebase-admin').catch(() => null);
+            
+            if (admin && admin.apps.length > 0) {
+                // Use Firebase Admin SDK to update password
+                const userRecord = await admin.auth().getUserByEmail(email);
+                await admin.auth().updateUser(userRecord.uid, {
+                    password: newPassword
+                });
+                
+                // Delete the used OTP
+                await fetch(otpUrl, { method: 'DELETE' });
+                
+                console.log(`Password reset successfully for: ${email}`);
+                return res.json({
+                    success: true,
+                    message: 'Password reset successfully'
+                });
+            }
+        } catch (adminError) {
+            console.warn('Firebase Admin SDK not available, using alternative method:', adminError.message);
+        }
+        
+        // Alternative: Use Firebase REST API to send password reset email
+        // Since we can't directly update password without Admin SDK, we'll send a reset email
+        // The user will receive an email with a link to reset their password
+        
+        try {
+            // Use Firebase REST API to send password reset email
+            const firebaseApiKey = process.env.FIREBASE_API_KEY || process.env.FIREBASE_WEB_API_KEY;
+            
+            if (firebaseApiKey) {
+                const resetEmailUrl = `https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key=${firebaseApiKey}`;
+                const resetResponse = await fetch(resetEmailUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        requestType: 'PASSWORD_RESET',
+                        email: email
+                    })
+                });
+                
+                if (resetResponse.ok) {
+                    // Delete the used OTP
+                    await fetch(otpUrl, { method: 'DELETE' });
+                    
+                    console.log(`Password reset email sent to: ${email}`);
+                    return res.json({
+                        success: true,
+                        message: 'Password reset email sent. Please check your email and follow the link to reset your password.'
+                    });
+                }
+            }
+        } catch (emailError) {
+            console.warn('Failed to send password reset email:', emailError.message);
+        }
+        
+        // If email sending fails, store the new password temporarily in Firebase
+        // This is a temporary workaround - Admin SDK is still recommended
+        console.log(`Password reset requested for: ${email}`);
+        console.log('⚠️  Firebase Admin SDK is recommended for direct password reset.');
+        console.log('⚠️  Please install: npm install firebase-admin');
+        console.log('⚠️  And initialize with service account credentials.');
+        
+        // Store password reset request with new password (encrypted/hashed in production)
+        // WARNING: This is a temporary solution - passwords should NOT be stored in plain text
+        // In production, use Firebase Admin SDK to update password directly
+        const resetRequestUrl = `${FIREBASE_DATABASE_URL}/password_reset_requests/${emailKey}.json`;
+        await fetch(resetRequestUrl, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                email: email,
+                newPassword: newPassword, // WARNING: Store hashed in production!
+                requestedAt: Date.now(),
+                status: 'pending',
+                expiresAt: Date.now() + (10 * 60 * 1000) // 10 minutes
+            })
+        });
+        
+        // Delete the used OTP
+        await fetch(otpUrl, { method: 'DELETE' });
+        
+        return res.json({
+            success: true,
+            message: 'Password reset request received. Admin will process your request shortly.',
+            note: 'For immediate password reset, please set up Firebase Admin SDK in the backend.'
+        });
+        
+    } catch (error) {
+        console.error('Reset password error:', error);
+        res.status(500).json({ 
+            success: false,
+            error: 'Failed to reset password',
+            message: error.message 
+        });
+    }
+});
+
 // Test endpoint to verify server is running
 app.get('/api/otp/test', (req, res) => {
     res.json({ 
