@@ -2331,8 +2331,18 @@ If you did not request this password reset, please ignore this email.
     }
 });
 
+// Test endpoint to verify server is running
+app.get('/api/otp/test', (req, res) => {
+    res.json({ 
+        success: true, 
+        message: 'OTP endpoint is working',
+        timestamp: new Date().toISOString()
+    });
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
     console.log('ToyyibPay backend ready!');
+    console.log('OTP endpoints available at: /api/otp/send-email');
 });
