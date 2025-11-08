@@ -75,11 +75,11 @@ app.use('/api/toyyibpay/callback', (req, res, next) => {
 const TOYYIBPAY_USER_SECRET_KEY = process.env.TOYYIBPAY_USER_SECRET_KEY;
 const TOYYIBPAY_CATEGORY_CODE = process.env.TOYYIBPAY_CATEGORY_CODE;
 
-// ToyyibPay API URLs - use environment variable or default to development (sandbox)
+// ToyyibPay API URLs
 // Production: https://toyyibpay.com
 // Development (Sandbox): https://dev.toyyibpay.com
-// Temporarily forced to sandbox for testing after maintenance
-const TOYYIBPAY_BASE_URL = 'https://dev.toyyibpay.com';
+// Currently set to PRODUCTION (sandbox is in maintenance)
+const TOYYIBPAY_BASE_URL = 'https://toyyibpay.com';
 const TOYYIBPAY_API_URL = `${TOYYIBPAY_BASE_URL}/index.php/api/createBill`;
 
 // Log credentials on startup
@@ -456,6 +456,11 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
         responseText = responseText.trim();
         
         // Check for ToyyibPay error messages in plain text
+        if (responseText.includes('[KEY-DID-NOT-EXIST-OR-USER-IS-NOT-ACTIVE]')) {
+            console.error('ToyyibPay API error: Invalid credentials or account not active');
+            throw new Error('ToyyibPay API error: Invalid userSecretKey/categoryCode OR user account is not active. Please check your ToyyibPay sandbox credentials and ensure your account is activated in the sandbox environment.');
+        }
+        
         if (responseText.includes('[KEY-DID-NOT-EXIST]')) {
             console.error('ToyyibPay API error: Invalid credentials');
             throw new Error('ToyyibPay API error: Invalid userSecretKey or categoryCode. Please check your ToyyibPay credentials.');
