@@ -78,7 +78,8 @@ const TOYYIBPAY_CATEGORY_CODE = process.env.TOYYIBPAY_CATEGORY_CODE;
 // ToyyibPay API URLs - use environment variable or default to development (sandbox)
 // Production: https://toyyibpay.com
 // Development (Sandbox): https://dev.toyyibpay.com
-const TOYYIBPAY_BASE_URL = process.env.TOYYIBPAY_BASE_URL || 'https://dev.toyyibpay.com';
+// Temporarily forced to sandbox for testing after maintenance
+const TOYYIBPAY_BASE_URL = 'https://dev.toyyibpay.com';
 const TOYYIBPAY_API_URL = `${TOYYIBPAY_BASE_URL}/index.php/api/createBill`;
 
 // Log credentials on startup
