@@ -79,7 +79,7 @@ const TOYYIBPAY_CATEGORY_CODE = process.env.TOYYIBPAY_CATEGORY_CODE;
 // Production: https://toyyibpay.com
 // Development (Sandbox): https://dev.toyyibpay.com
 // Currently set to PRODUCTION (sandbox is in maintenance)
-const TOYYIBPAY_BASE_URL = 'https://dev.toyyibpay.com';
+const TOYYIBPAY_BASE_URL = 'https://toyyibpay.com';
 const TOYYIBPAY_API_URL = `${TOYYIBPAY_BASE_URL}/index.php/api/createBill`;
 
 // Log credentials on startup
@@ -516,6 +516,7 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
                 success: true,
                 billCode: billCode,
                 paymentUrl: paymentUrl,
+                qrCodeUrl: `${paymentUrl}/qr`, // Try QR code endpoint
                 message: 'Bill created successfully'
             });
         } else if (result && result.billCode) {
@@ -529,6 +530,7 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
                 success: true,
                 billCode: result.billCode,
                 paymentUrl: paymentUrl,
+                qrCodeUrl: `${paymentUrl}/qr`, // Try QR code endpoint
                 message: 'Bill created successfully'
             });
         } else if (result && result.error) {
@@ -1101,6 +1103,139 @@ app.post('/api/test/payment-record', async (req, res) => {
             success: false,
             error: error.message,
             stack: error.stack
+        });
+    }
+});
+
+// Get QR code from payment page endpoint
+app.get('/api/toyyibpay/qr-code', async (req, res) => {
+    try {
+        const { billCode } = req.query;
+        
+        if (!billCode) {
+            return res.status(400).json({
+                error: 'Missing billCode',
+                message: 'billCode is required'
+            });
+        }
+        
+        const paymentUrl = `${TOYYIBPAY_BASE_URL}/${billCode}`;
+        console.log('Fetching QR code from payment page:', paymentUrl);
+        
+        try {
+            // Fetch the payment page HTML
+            const pageResponse = await fetch(paymentUrl, {
+                method: 'GET',
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                }
+            });
+            
+            if (!pageResponse.ok) {
+                throw new Error(`Failed to fetch payment page: ${pageResponse.status}`);
+            }
+            
+            const html = await pageResponse.text();
+            console.log('Payment page HTML fetched, length:', html.length);
+            
+            // Try to extract QR code image URL from HTML
+            // Look for common QR code image patterns
+            const qrPatterns = [
+                /<img[^>]*src=["']([^"']*qr[^"']*)["'][^>]*>/gi,
+                /<img[^>]*src=["']([^"']*QR[^"']*)["'][^>]*>/gi,
+                /qr[_-]?code[^"']*\.(png|jpg|jpeg|svg)/gi
+            ];
+            
+            let qrCodeUrl = null;
+            let qrCodeDataUrl = null;
+            
+            // Try each pattern
+            for (const pattern of qrPatterns) {
+                const matches = html.match(pattern);
+                if (matches && matches.length > 0) {
+                    // Extract URL from img tag
+                    const imgMatch = matches[0].match(/src=["']([^"']+)["']/);
+                    if (imgMatch && imgMatch[1]) {
+                        qrCodeUrl = imgMatch[1];
+                        // Convert relative URL to absolute
+                        if (qrCodeUrl.startsWith('/')) {
+                            qrCodeUrl = `${TOYYIBPAY_BASE_URL}${qrCodeUrl}`;
+                        } else if (qrCodeUrl.startsWith('./') || !qrCodeUrl.startsWith('http')) {
+                            qrCodeUrl = `${TOYYIBPAY_BASE_URL}/${qrCodeUrl}`;
+                        }
+                        break;
+                    }
+                }
+            }
+            
+            // Also check for base64 encoded QR codes
+            const base64Match = html.match(/data:image\/[^;]+;base64,[A-Za-z0-9+/=]{100,}/);
+            if (base64Match) {
+                qrCodeDataUrl = base64Match[0];
+            }
+            
+            // If no QR code found in HTML, try the QR endpoint
+            if (!qrCodeUrl && !qrCodeDataUrl) {
+                try {
+                    const qrResponse = await fetch(`${paymentUrl}/qr`, {
+                        method: 'GET',
+                        headers: {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                        }
+                    });
+                    
+                    if (qrResponse.ok) {
+                        const contentType = qrResponse.headers.get('content-type');
+                        if (contentType && contentType.startsWith('image/')) {
+                            // Convert image to base64
+                            const buffer = await qrResponse.arrayBuffer();
+                            const base64 = Buffer.from(buffer).toString('base64');
+                            qrCodeDataUrl = `data:${contentType};base64,${base64}`;
+                        } else {
+                            qrCodeUrl = `${paymentUrl}/qr`;
+                        }
+                    }
+                } catch (qrError) {
+                    console.log('QR endpoint not available, using payment URL');
+                }
+            }
+            
+            if (qrCodeUrl || qrCodeDataUrl) {
+                res.json({
+                    success: true,
+                    qrCodeUrl: qrCodeUrl,
+                    qrCodeDataUrl: qrCodeDataUrl,
+                    paymentUrl: paymentUrl
+                });
+            } else {
+                // Return payment URL so app can load it in WebView
+                res.json({
+                    success: true,
+                    qrCodeUrl: null,
+                    qrCodeDataUrl: null,
+                    paymentUrl: paymentUrl,
+                    message: 'QR code not found in HTML, use paymentUrl to load in WebView'
+                });
+            }
+            
+        } catch (fetchError) {
+            console.error('Error fetching QR code:', fetchError);
+            // Return payment URL as fallback
+            res.json({
+                success: true,
+                qrCodeUrl: null,
+                qrCodeDataUrl: null,
+                paymentUrl: paymentUrl,
+                message: 'Could not fetch QR code, use paymentUrl to load in WebView',
+                error: fetchError.message
+            });
+        }
+        
+    } catch (error) {
+        console.error('Get QR code error:', error);
+        res.status(500).json({
+            error: 'Internal server error',
+            message: error.message
         });
     }
 });
