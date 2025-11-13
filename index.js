@@ -79,7 +79,7 @@ const TOYYIBPAY_CATEGORY_CODE = process.env.TOYYIBPAY_CATEGORY_CODE;
 // Production: https://toyyibpay.com
 // Development (Sandbox): https://dev.toyyibpay.com
 // Currently set to PRODUCTION (sandbox is in maintenance)
-const TOYYIBPAY_BASE_URL = 'https://.toyyibpay.com';
+const TOYYIBPAY_BASE_URL = 'https://dev.toyyibpay.com';
 const TOYYIBPAY_API_URL = `${TOYYIBPAY_BASE_URL}/index.php/api/createBill`;
 
 // Log credentials on startup
