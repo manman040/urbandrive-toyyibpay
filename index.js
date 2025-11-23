@@ -75,20 +75,31 @@ app.use('/api/toyyibpay/callback', (req, res, next) => {
 const TOYYIBPAY_USER_SECRET_KEY = process.env.TOYYIBPAY_USER_SECRET_KEY;
 const TOYYIBPAY_CATEGORY_CODE = process.env.TOYYIBPAY_CATEGORY_CODE;
 
+// Presentation/Demo Mode - Set to 'true' to enable demo mode for presentations
+// When enabled, invalid credentials will return mock payment URLs instead of errors
+// Add this to your Render.com environment variables: DEMO_MODE=true or PRESENTATION_MODE=true
+const DEMO_MODE = process.env.DEMO_MODE === 'true' || process.env.PRESENTATION_MODE === 'true';
+
 // ToyyibPay API URLs
 // Production: https://toyyibpay.com
 // Development (Sandbox): https://dev.toyyibpay.com
-// Currently set to PRODUCTION (sandbox is in maintenance)
-const TOYYIBPAY_BASE_URL = 'https://dev.toyyibpay.com';
+// Use environment variable TOYYIBPAY_ENV to switch: 'production' or 'sandbox'
+// Default to production, but can switch to sandbox if credentials are for sandbox
+const TOYYIBPAY_ENV = process.env.TOYYIBPAY_ENV || 'production';
+const TOYYIBPAY_BASE_URL = TOYYIBPAY_ENV === 'sandbox' 
+    ? 'https://dev.toyyibpay.com' 
+    : 'https://toyyibpay.com';
 const TOYYIBPAY_API_URL = `${TOYYIBPAY_BASE_URL}/index.php/api/createBill`;
 
 // Log credentials on startup
 console.log('ToyyibPay Configuration:');
-console.log('Environment:', TOYYIBPAY_BASE_URL.includes('dev') ? 'DEVELOPMENT' : 'PRODUCTION');
+console.log('Environment:', TOYYIBPAY_ENV.toUpperCase());
 console.log('Base URL:', TOYYIBPAY_BASE_URL);
-console.log('Secret Key:', TOYYIBPAY_USER_SECRET_KEY ? `${TOYYIBPAY_USER_SECRET_KEY.substring(0, 8)}...` : 'MISSING');
-console.log('Category Code:', TOYYIBPAY_CATEGORY_CODE);
 console.log('API URL:', TOYYIBPAY_API_URL);
+console.log('Has Secret Key:', !!TOYYIBPAY_USER_SECRET_KEY);
+console.log('Has Category Code:', !!TOYYIBPAY_CATEGORY_CODE);
+console.log('Secret Key Preview:', TOYYIBPAY_USER_SECRET_KEY ? `${TOYYIBPAY_USER_SECRET_KEY.substring(0, 8)}...` : 'MISSING');
+console.log('Category Code:', TOYYIBPAY_CATEGORY_CODE || 'MISSING');
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
@@ -463,7 +474,21 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
         
         if (responseText.includes('[KEY-DID-NOT-EXIST]')) {
             console.error('ToyyibPay API error: Invalid credentials');
-            throw new Error('ToyyibPay API error: Invalid userSecretKey or categoryCode. Please check your ToyyibPay credentials.');
+            console.error('Current environment:', TOYYIBPAY_ENV);
+            console.error('Current base URL:', TOYYIBPAY_BASE_URL);
+            console.error('Secret key preview:', TOYYIBPAY_USER_SECRET_KEY ? `${TOYYIBPAY_USER_SECRET_KEY.substring(0, 8)}...` : 'MISSING');
+            console.error('Category code:', TOYYIBPAY_CATEGORY_CODE || 'MISSING');
+            
+            // Suggest switching environment if credentials might be for different environment
+            let errorMessage = 'ToyyibPay API error: Invalid userSecretKey or categoryCode. ';
+            if (TOYYIBPAY_ENV === 'production') {
+                errorMessage += 'If your credentials are for sandbox, set environment variable TOYYIBPAY_ENV=sandbox in Render.com. ';
+            } else {
+                errorMessage += 'If your credentials are for production, set environment variable TOYYIBPAY_ENV=production in Render.com. ';
+            }
+            errorMessage += 'Please verify your credentials at https://toyyibpay.com (production) or https://dev.toyyibpay.com (sandbox).';
+            
+            throw new Error(errorMessage);
         }
         
         if (responseText.includes('[USER-IS-NOT-ACTIVE]')) {
@@ -552,10 +577,22 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
         
     } catch (error) {
         console.error('Create bill error:', error);
+        console.error('Error details:', {
+            message: error.message,
+            environment: TOYYIBPAY_ENV,
+            baseUrl: TOYYIBPAY_BASE_URL,
+            hasSecretKey: !!TOYYIBPAY_USER_SECRET_KEY,
+            hasCategoryCode: !!TOYYIBPAY_CATEGORY_CODE
+        });
+        
         res.status(500).json({
             error: 'Internal server error',
             message: error.message,
-            stack: error.stack
+            environment: TOYYIBPAY_ENV,
+            baseUrl: TOYYIBPAY_BASE_URL,
+            suggestion: error.message.includes('KEY-DID-NOT-EXIST') 
+                ? 'Try switching TOYYIBPAY_ENV to sandbox if your credentials are for sandbox, or verify your credentials are correct for the current environment.'
+                : 'Check your ToyyibPay credentials and ensure they match the environment (production or sandbox).'
         });
     }
 });
@@ -887,18 +924,38 @@ async function updateFirebaseCommission(driverId, amount, billCode, reference) {
         
         if (currentData) {
             const currentUnpaid = parseFloat(currentData.unpaid_commission) || 0;
+            const currentPaid = parseFloat(currentData.paid_commission) || 0;
+            const currentTotalCommission = parseFloat(currentData.total_commission) || 0;
             const amountToDeduct = parseFloat(amount) || 0;
-            const newUnpaid = Math.max(0, currentUnpaid - amountToDeduct);
+            
+            // Calculate new paid commission
+            const newPaid = currentPaid + amountToDeduct;
+            
+            // Calculate unpaid commission: ensure it's consistent with total_commission - paid_commission
+            // This ensures unpaid = total - paid, which is what web dashboard expects
+            const calculatedUnpaid = Math.max(0, currentTotalCommission - newPaid);
+            
+            // Also calculate directly from current unpaid for logging/comparison
+            const directDeductionUnpaid = Math.max(0, currentUnpaid - amountToDeduct);
             
             console.log('Commission calculation:', {
                 currentUnpaid: currentUnpaid,
+                currentPaid: currentPaid,
+                currentTotalCommission: currentTotalCommission,
                 amountToDeduct: amountToDeduct,
-                newUnpaid: newUnpaid
+                newPaid: newPaid,
+                calculatedUnpaid: calculatedUnpaid,
+                directDeductionUnpaid: directDeductionUnpaid,
+                note: 'Using calculatedUnpaid for consistency (total - paid)'
             });
             
-            // Update unpaid commission
+            // Update both unpaid_commission and paid_commission
+            // Use calculated unpaid to ensure consistency: unpaid = total - paid
             const updateData = {
-                unpaid_commission: newUnpaid
+                unpaid_commission: calculatedUnpaid,
+                paid_commission: newPaid,
+                last_payment_date: new Date().toISOString(),
+                last_payment_amount: amountToDeduct
             };
             
             console.log('Updating commission with:', updateData);
@@ -916,10 +973,31 @@ async function updateFirebaseCommission(driverId, amount, billCode, reference) {
                 console.log('✅ Commission updated successfully:', {
                     driverId,
                     oldUnpaid: currentUnpaid,
-                    newUnpaid: newUnpaid,
-                    amountPaid: amountToDeduct
+                    oldPaid: currentPaid,
+                    newUnpaid: calculatedUnpaid,
+                    newPaid: newPaid,
+                    amountPaid: amountToDeduct,
+                    totalCommission: currentTotalCommission,
+                    verification: `unpaid (${calculatedUnpaid}) + paid (${newPaid}) = ${calculatedUnpaid + newPaid}, total = ${currentTotalCommission}`
                 });
                 console.log('Update response:', updateResponseText);
+                
+                // Verify the update by fetching again
+                setTimeout(async () => {
+                    try {
+                        const verifyResponse = await fetch(firebaseUrl);
+                        if (verifyResponse.ok) {
+                            const verifyData = await verifyResponse.json();
+                            console.log('✅ Verification - Updated commission data:', {
+                                unpaid_commission: verifyData.unpaid_commission,
+                                paid_commission: verifyData.paid_commission,
+                                total_commission: verifyData.total_commission
+                            });
+                        }
+                    } catch (verifyError) {
+                        console.warn('⚠️ Could not verify commission update:', verifyError.message);
+                    }
+                }, 1000);
                 
                 // Payment record should already be saved in callback before this function
                 // This function only updates commission, payment record is saved separately
