@@ -85,14 +85,19 @@ const DEMO_MODE = process.env.DEMO_MODE === 'true' || process.env.PRESENTATION_M
 // Development (Sandbox): https://dev.toyyibpay.com
 // Use environment variable TOYYIBPAY_ENV to switch: 'production' or 'sandbox'
 // Default to production, but can switch to sandbox if credentials are for sandbox
-const TOYYIBPAY_ENV = process.env.TOYYIBPAY_ENV || 'production';
-const TOYYIBPAY_BASE_URL = TOYYIBPAY_ENV === 'sandbox' 
+// Accept multiple variations: 'sandbox', 'dev', 'development', 'test' -> sandbox
+const TOYYIBPAY_ENV_RAW = (process.env.TOYYIBPAY_ENV || 'production').trim().toLowerCase();
+const IS_SANDBOX = ['sandbox', 'dev', 'development', 'test', 'testing'].includes(TOYYIBPAY_ENV_RAW);
+const TOYYIBPAY_ENV = IS_SANDBOX ? 'sandbox' : 'production';
+const TOYYIBPAY_BASE_URL = IS_SANDBOX
     ? 'https://dev.toyyibpay.com' 
     : 'https://toyyibpay.com';
 const TOYYIBPAY_API_URL = `${TOYYIBPAY_BASE_URL}/index.php/api/createBill`;
 
 // Log credentials on startup
 console.log('ToyyibPay Configuration:');
+console.log('Raw TOYYIBPAY_ENV value:', process.env.TOYYIBPAY_ENV || '(not set, using default: production)');
+console.log('Normalized TOYYIBPAY_ENV:', TOYYIBPAY_ENV_RAW);
 console.log('Environment:', TOYYIBPAY_ENV.toUpperCase());
 console.log('Base URL:', TOYYIBPAY_BASE_URL);
 console.log('API URL:', TOYYIBPAY_API_URL);
@@ -111,7 +116,7 @@ app.get('/api/toyyibpay/verify', (req, res) => {
     res.json({
         success: true,
         message: 'ToyyibPay credentials loaded',
-        environment: TOYYIBPAY_BASE_URL.includes('dev') ? 'DEVELOPMENT' : 'PRODUCTION',
+        environment: TOYYIBPAY_ENV.toUpperCase(),
         credentials: {
             hasSecretKey: !!TOYYIBPAY_USER_SECRET_KEY,
             hasCategoryCode: !!TOYYIBPAY_CATEGORY_CODE,
