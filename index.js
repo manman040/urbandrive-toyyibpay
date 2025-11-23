@@ -10,6 +10,11 @@ dotenv.config();
 
 // Firebase configuration
 const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID;
+// Firebase Database Secret (Legacy - for Realtime Database REST API authentication)
+// Get this from Firebase Console -> Project Settings -> Service Accounts -> Database Secrets
+// NOTE: Database Secrets are deprecated but still work for REST API authentication
+const FIREBASE_DATABASE_SECRET = process.env.FIREBASE_DATABASE_SECRET;
+
 // Use the correct Firebase database URL (asia-southeast1 region)
 // CRITICAL: Firebase database URL must match the actual region
 const CORRECT_FIREBASE_URL = 'https://drive-ab344-default-rtdb.asia-southeast1.firebasedatabase.app';
@@ -27,6 +32,38 @@ if (!FIREBASE_DATABASE_URL ||
 }
 
 console.log('✅ Using Firebase Database URL:', FIREBASE_DATABASE_URL);
+if (FIREBASE_DATABASE_SECRET) {
+    console.log('✅ Firebase Database Secret configured (for REST API authentication)');
+} else {
+    console.warn('⚠️ Firebase Database Secret not configured. If you get 401 errors, set FIREBASE_DATABASE_SECRET environment variable.');
+    console.warn('💡 Get it from: Firebase Console -> Project Settings -> Service Accounts -> Database Secrets');
+}
+
+// Helper function to append auth token to Firebase URLs if available
+function getFirebaseUrlWithAuth(path, queryParams = '') {
+    // Remove .json if already present (to avoid double .json)
+    let cleanPath = path.replace(/\.json$/, '');
+    // Ensure path starts with /
+    if (!cleanPath.startsWith('/')) {
+        cleanPath = '/' + cleanPath;
+    }
+    // Add .json suffix
+    let url = `${FIREBASE_DATABASE_URL}${cleanPath}.json`;
+    
+    // Handle query parameters and auth token
+    if (FIREBASE_DATABASE_SECRET) {
+        const authParam = `auth=${FIREBASE_DATABASE_SECRET}`;
+        if (queryParams) {
+            url = `${url}?${queryParams}&${authParam}`;
+        } else {
+            url = `${url}?${authParam}`;
+        }
+    } else if (queryParams) {
+        url = `${url}?${queryParams}`;
+    }
+    
+    return url;
+}
 
 const app = express();
 app.use(express.json());
@@ -187,7 +224,7 @@ app.post('/api/payment/process', async (req, res) => {
         let finalReference = reference;
         
         // Get data from bill_mappings
-        const mappingUrl = `${FIREBASE_DATABASE_URL}/bill_mappings/${billCode}.json`;
+        const mappingUrl = getFirebaseUrlWithAuth(`/bill_mappings/${billCode}`);
         const mappingResponse = await fetch(mappingUrl);
         const mapping = await mappingResponse.json();
         
@@ -287,7 +324,7 @@ app.post('/api/payment/recover', async (req, res) => {
         console.log('🔄 RECOVERING payment:', { billCode, driverId, amount: amountNum, reference });
         
         // First, update bill_mappings with correct data for future reference
-        const mappingUrl = `${FIREBASE_DATABASE_URL}/bill_mappings/${billCode}.json`;
+        const mappingUrl = getFirebaseUrlWithAuth(`/bill_mappings/${billCode}`);
         await fetch(mappingUrl, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
@@ -734,7 +771,7 @@ async function storeBillCodeMapping(billCode, driverId, amount, reference, billE
         
         console.log('📝 Storing billCode mapping:', { billCode, mappingData });
         
-        const mappingUrl = `${FIREBASE_DATABASE_URL}/bill_mappings/${billCode}.json`;
+        const mappingUrl = getFirebaseUrlWithAuth(`/bill_mappings/${billCode}`);
         const response = await fetch(mappingUrl, {
             method: 'PUT',
             headers: {
@@ -849,7 +886,7 @@ app.post('/api/toyyibpay/callback', async (req, res) => {
                 mappingAttempts++;
                 try {
                     console.log(`🔍 Step 1 (Attempt ${mappingAttempts}/${maxMappingAttempts}): Checking bill_mappings for billCode:`, billCode);
-                    const mappingUrl = `${FIREBASE_DATABASE_URL}/bill_mappings/${billCode}.json`;
+                    const mappingUrl = getFirebaseUrlWithAuth(`/bill_mappings/${billCode}`);
                     const mappingResponse = await fetch(mappingUrl);
                     
                     if (!mappingResponse.ok) {
@@ -904,7 +941,7 @@ app.post('/api/toyyibpay/callback', async (req, res) => {
                 // If still don't have it, try to get from bill_mappings again (in case it's there but driverId/amount are null)
                 if (!billExternalReferenceNo) {
                     try {
-                        const mappingUrl = `${FIREBASE_DATABASE_URL}/bill_mappings/${billCode}.json`;
+                        const mappingUrl = getFirebaseUrlWithAuth(`/bill_mappings/${billCode}`);
                         const mappingResponse = await fetch(mappingUrl);
                         if (mappingResponse.ok) {
                             const mapping = await mappingResponse.json();
@@ -1114,7 +1151,7 @@ async function updateFirebaseCommission(driverId, amount, billCode, reference) {
         }
         
         // Try both paths - commission_summary might be at driver_commissions or directly
-        let firebaseUrl = `${FIREBASE_DATABASE_URL}/driver_commissions/${driverId}/commission_summary.json`;
+        let firebaseUrl = getFirebaseUrlWithAuth(`/driver_commissions/${driverId}/commission_summary`);
         
         // Get current commission data
         console.log('Fetching current commission from:', firebaseUrl);
@@ -1123,7 +1160,7 @@ async function updateFirebaseCommission(driverId, amount, billCode, reference) {
         // If first path fails, try alternative path
         if (!getResponse.ok) {
             console.warn('⚠️ First path failed, trying alternative path...');
-            const altFirebaseUrl = `${FIREBASE_DATABASE_URL}/commissions/${driverId}.json`;
+            const altFirebaseUrl = getFirebaseUrlWithAuth(`/commissions/${driverId}`);
             getResponse = await fetch(altFirebaseUrl);
             if (getResponse.ok) {
                 firebaseUrl = altFirebaseUrl;
@@ -1137,7 +1174,8 @@ async function updateFirebaseCommission(driverId, amount, billCode, reference) {
             const createData = {
                 unpaid_commission: 0,
                 total_commission: 0,
-                total_rides: 0
+                total_rides: 0,
+                paid_commission: 0
             };
             const createResponse = await fetch(firebaseUrl, {
                 method: 'PUT',
@@ -2337,8 +2375,9 @@ app.get('/api/toyyibpay/success', async (req, res) => {
     if (!actualBillCodeFromQuery && driverId && reference) {
         try {
             console.log('Searching for billCode in bill_mappings using driverId and reference...');
-            const mappingsUrl = `${FIREBASE_DATABASE_URL}/bill_mappings.json`;
-            const mappingsResponse = await fetch(mappingsUrl + '?orderBy="driverId"&equalTo="' + driverId + '"');
+            const queryParams = `orderBy="driverId"&equalTo="${driverId}"`;
+            const mappingsUrl = getFirebaseUrlWithAuth('/bill_mappings', queryParams);
+            const mappingsResponse = await fetch(mappingsUrl);
             const allMappings = await mappingsResponse.json();
             
             if (allMappings) {
@@ -2362,7 +2401,7 @@ app.get('/api/toyyibpay/success', async (req, res) => {
     // Also check bill_mappings to see if billCode exists (verify it's a valid bill)
     if (actualBillCodeFromQuery && !paymentVerified) {
         try {
-            const mappingUrl = `${FIREBASE_DATABASE_URL}/bill_mappings/${actualBillCodeFromQuery}.json`;
+            const mappingUrl = getFirebaseUrlWithAuth(`/bill_mappings/${actualBillCodeFromQuery}`);
             const mappingResponse = await fetch(mappingUrl);
             const mapping = await mappingResponse.json();
             
