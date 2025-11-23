@@ -163,10 +163,10 @@ app.post('/api/commission/update', async (req, res) => {
     }
 });
 
-// Manual payment processing endpoint - processes payment by billCode
+// Manual payment processing endpoint - processes payment by billCode with fallback mechanisms
 app.post('/api/payment/process', async (req, res) => {
     try {
-        const { billCode } = req.body;
+        const { billCode, driverId, amount, reference } = req.body;
         
         if (!billCode) {
             return res.status(400).json({
@@ -177,49 +177,149 @@ app.post('/api/payment/process', async (req, res) => {
         
         console.log('🔄 Manual payment processing for billCode:', billCode);
         
+        let finalDriverId = driverId;
+        let finalAmount = amount ? parseFloat(amount) : null;
+        let finalReference = reference;
+        
         // Get data from bill_mappings
         const mappingUrl = `${FIREBASE_DATABASE_URL}/bill_mappings/${billCode}.json`;
         const mappingResponse = await fetch(mappingUrl);
         const mapping = await mappingResponse.json();
         
-        if (!mapping || !mapping.driverId || !mapping.amount) {
+        if (mapping) {
+            console.log('Bill mapping found:', mapping);
+            if (!finalDriverId) finalDriverId = mapping.driverId;
+            if (!finalAmount) finalAmount = parseFloat(mapping.amount);
+            if (!finalReference) finalReference = mapping.reference;
+            
+            // If mapping has billExternalReferenceNo but missing driverId/amount, try parsing it
+            if ((!finalDriverId || !finalAmount) && mapping.billExternalReferenceNo) {
+                console.log('Attempting to parse billExternalReferenceNo:', mapping.billExternalReferenceNo);
+                const parts = mapping.billExternalReferenceNo.split('_');
+                if (parts.length >= 4) {
+                    if (!finalAmount) finalAmount = parseFloat(parts[2]);
+                    if (!finalDriverId) {
+                        const driverIdShort = parts[1];
+                        // Find full driverId
+                        const driversUrl = `${FIREBASE_DATABASE_URL}/drivers.json`;
+                        const driversResponse = await fetch(driversUrl);
+                        const drivers = await driversResponse.json();
+                        if (drivers) {
+                            const matchingDriverId = Object.keys(drivers).find(id => id.startsWith(driverIdShort));
+                            if (matchingDriverId) finalDriverId = matchingDriverId;
+                        }
+                    }
+                }
+            }
+        }
+        
+        if (!finalDriverId || !finalAmount) {
             return res.status(404).json({
-                error: 'Payment not found',
-                message: `No payment data found for billCode: ${billCode}`,
-                billCode: billCode
+                error: 'Payment data incomplete',
+                message: `Missing driverId or amount for billCode: ${billCode}`,
+                billCode: billCode,
+                mapping: mapping,
+                foundDriverId: !!finalDriverId,
+                foundAmount: !!finalAmount
             });
         }
         
-        const { driverId, amount, reference } = mapping;
-        
-        console.log('Found payment data:', { driverId, amount, reference, billCode });
+        console.log('Processing payment with:', { driverId: finalDriverId, amount: finalAmount, reference: finalReference, billCode });
         
         // Process payment
-        const success = await updateFirebaseCommission(driverId, amount, billCode, reference);
+        const success = await updateFirebaseCommission(finalDriverId, finalAmount, billCode, finalReference);
         
         if (success) {
             res.json({
                 success: true,
                 message: 'Payment processed successfully',
                 data: {
-                    driverId,
-                    amount,
+                    driverId: finalDriverId,
+                    amount: finalAmount,
                     billCode,
-                    reference,
-                    action: 'Reduced unpaid_commission by ' + amount
+                    reference: finalReference,
+                    action: 'Reduced unpaid_commission by ' + finalAmount
                 }
             });
         } else {
             res.status(500).json({
                 error: 'Failed to process payment',
                 message: 'Payment processing failed',
-                data: { driverId, amount, billCode, reference }
+                data: { driverId: finalDriverId, amount: finalAmount, billCode, reference: finalReference }
             });
         }
     } catch (error) {
         console.error('Payment processing error:', error);
         res.status(500).json({
             error: 'Payment processing failed',
+            message: error.message
+        });
+    }
+});
+
+// Recovery endpoint - manually process a payment with all details
+app.post('/api/payment/recover', async (req, res) => {
+    try {
+        const { billCode, driverId, amount, reference } = req.body;
+        
+        if (!billCode || !driverId || !amount) {
+            return res.status(400).json({
+                error: 'Missing required fields',
+                message: 'billCode, driverId, and amount are required',
+                received: { billCode, driverId, amount }
+            });
+        }
+        
+        const amountNum = parseFloat(amount);
+        if (isNaN(amountNum) || amountNum <= 0) {
+            return res.status(400).json({
+                error: 'Invalid amount',
+                message: 'Amount must be a positive number',
+                received: amount
+            });
+        }
+        
+        console.log('🔄 RECOVERING payment:', { billCode, driverId, amount: amountNum, reference });
+        
+        // First, update bill_mappings with correct data for future reference
+        const mappingUrl = `${FIREBASE_DATABASE_URL}/bill_mappings/${billCode}.json`;
+        await fetch(mappingUrl, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                driverId: String(driverId).trim(),
+                amount: amountNum,
+                reference: reference || '',
+                recovered: true,
+                recoveredAt: new Date().toISOString()
+            })
+        });
+        
+        // Process payment
+        const success = await updateFirebaseCommission(String(driverId).trim(), amountNum, billCode, reference);
+        
+        if (success) {
+            res.json({
+                success: true,
+                message: 'Payment recovered and processed successfully',
+                data: {
+                    driverId,
+                    amount: amountNum,
+                    billCode,
+                    reference
+                }
+            });
+        } else {
+            res.status(500).json({
+                error: 'Failed to recover payment',
+                message: 'Commission update failed',
+                data: { driverId, amount: amountNum, billCode }
+            });
+        }
+    } catch (error) {
+        console.error('Payment recovery error:', error);
+        res.status(500).json({
+            error: 'Payment recovery failed',
             message: error.message
         });
     }
@@ -600,13 +700,34 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
 // Function to store billCode mapping for callback retrieval
 async function storeBillCodeMapping(billCode, driverId, amount, reference, billExternalReferenceNo) {
     try {
+        // Validate inputs before storing
+        if (!billCode || !driverId || !amount || amount <= 0) {
+            console.error('❌ CRITICAL: Invalid data for billCode mapping:', {
+                billCode: billCode,
+                driverId: driverId,
+                amount: amount,
+                reference: reference
+            });
+            return false;
+        }
+        
+        // Ensure amount is a number
+        const amountNum = parseFloat(amount);
+        if (isNaN(amountNum) || amountNum <= 0) {
+            console.error('❌ CRITICAL: Invalid amount value:', amount);
+            return false;
+        }
+        
         const mappingData = {
-            driverId: driverId,
-            amount: amount,
-            reference: reference,
-            billExternalReferenceNo: billExternalReferenceNo,
-            createdAt: new Date().toISOString()
+            driverId: String(driverId).trim(), // Ensure it's a string and trimmed
+            amount: amountNum, // Ensure it's a number
+            reference: reference ? String(reference).trim() : '',
+            billExternalReferenceNo: billExternalReferenceNo || '',
+            createdAt: new Date().toISOString(),
+            timestamp: Date.now()
         };
+        
+        console.log('📝 Storing billCode mapping:', { billCode, mappingData });
         
         const mappingUrl = `${FIREBASE_DATABASE_URL}/bill_mappings/${billCode}.json`;
         const response = await fetch(mappingUrl, {
@@ -617,15 +738,46 @@ async function storeBillCodeMapping(billCode, driverId, amount, reference, billE
             body: JSON.stringify(mappingData)
         });
         
+        const responseText = await response.text();
+        
         if (response.ok) {
-            console.log('BillCode mapping stored successfully:', { billCode, driverId, amount });
+            console.log('✅ BillCode mapping stored successfully:', { 
+                billCode, 
+                driverId: mappingData.driverId, 
+                amount: mappingData.amount,
+                responseStatus: response.status
+            });
+            
+            // Verify the data was stored correctly by reading it back
+            setTimeout(async () => {
+                try {
+                    const verifyResponse = await fetch(mappingUrl);
+                    if (verifyResponse.ok) {
+                        const verifyData = await verifyResponse.json();
+                        console.log('✅ Verification - Stored mapping data:', verifyData);
+                        if (!verifyData.driverId || !verifyData.amount) {
+                            console.error('❌❌❌ VERIFICATION FAILED: Stored data is missing driverId or amount!', verifyData);
+                        }
+                    }
+                } catch (verifyError) {
+                    console.warn('⚠️ Could not verify stored mapping:', verifyError.message);
+                }
+            }, 500);
+            
             return true;
         } else {
-            console.error('Failed to store billCode mapping:', response.status, response.statusText);
+            console.error('❌ Failed to store billCode mapping:', {
+                status: response.status,
+                statusText: response.statusText,
+                response: responseText,
+                billCode: billCode,
+                url: mappingUrl
+            });
             return false;
         }
     } catch (error) {
-        console.error('Error storing billCode mapping:', error);
+        console.error('❌ Error storing billCode mapping:', error);
+        console.error('Error stack:', error.stack);
         return false;
     }
 }
@@ -684,42 +836,99 @@ app.post('/api/toyyibpay/callback', async (req, res) => {
             let billExternalReferenceNo = null;
             
             // STEP 1: Try to get data from bill_mappings (MOST RELIABLE)
-            try {
-                console.log('🔍 Step 1: Checking bill_mappings for billCode:', billCode);
-                const mappingUrl = `${FIREBASE_DATABASE_URL}/bill_mappings/${billCode}.json`;
-                const mappingResponse = await fetch(mappingUrl);
-                const mapping = await mappingResponse.json();
-                
-                if (mapping && mapping.driverId && mapping.amount) {
-                    driverId = mapping.driverId;
-                    amount = mapping.amount;
-                    reference = mapping.reference || null;
-                    billExternalReferenceNo = mapping.billExternalReferenceNo || null;
-                    console.log('✅ Found data in bill_mappings:', { driverId, amount, reference });
-                } else {
-                    console.warn('⚠️ bill_mappings found but missing driverId or amount:', mapping);
+            // Try multiple times in case of timing issues
+            let mappingAttempts = 0;
+            const maxMappingAttempts = 3;
+            
+            while ((!driverId || !amount) && mappingAttempts < maxMappingAttempts) {
+                mappingAttempts++;
+                try {
+                    console.log(`🔍 Step 1 (Attempt ${mappingAttempts}/${maxMappingAttempts}): Checking bill_mappings for billCode:`, billCode);
+                    const mappingUrl = `${FIREBASE_DATABASE_URL}/bill_mappings/${billCode}.json`;
+                    const mappingResponse = await fetch(mappingUrl);
+                    
+                    if (!mappingResponse.ok) {
+                        console.warn(`⚠️ bill_mappings fetch failed (attempt ${mappingAttempts}):`, mappingResponse.status);
+                        if (mappingAttempts < maxMappingAttempts) {
+                            await new Promise(resolve => setTimeout(resolve, 1000 * mappingAttempts)); // Wait longer on retries
+                            continue;
+                        }
+                        break;
+                    }
+                    
+                    const mapping = await mappingResponse.json();
+                    console.log(`📋 bill_mappings raw data (attempt ${mappingAttempts}):`, JSON.stringify(mapping, null, 2));
+                    
+                    if (mapping && mapping.driverId && mapping.amount) {
+                        driverId = String(mapping.driverId).trim();
+                        amount = parseFloat(mapping.amount);
+                        reference = mapping.reference || null;
+                        billExternalReferenceNo = mapping.billExternalReferenceNo || null;
+                        console.log('✅ Found data in bill_mappings:', { driverId, amount, reference, billExternalReferenceNo });
+                        break; // Success, exit loop
+                    } else {
+                        console.warn(`⚠️ bill_mappings found but missing driverId or amount (attempt ${mappingAttempts}):`, {
+                            mapping: mapping,
+                            hasDriverId: !!mapping?.driverId,
+                            hasAmount: !!mapping?.amount,
+                            driverIdValue: mapping?.driverId,
+                            amountValue: mapping?.amount
+                        });
+                        
+                        if (mappingAttempts < maxMappingAttempts) {
+                            await new Promise(resolve => setTimeout(resolve, 1000 * mappingAttempts)); // Wait before retry
+                        }
+                    }
+                } catch (mappingError) {
+                    console.error(`❌ Failed to get billCode mapping (attempt ${mappingAttempts}):`, mappingError);
+                    if (mappingAttempts < maxMappingAttempts) {
+                        await new Promise(resolve => setTimeout(resolve, 1000 * mappingAttempts)); // Wait before retry
+                    }
                 }
-            } catch (mappingError) {
-                console.error('❌ Failed to get billCode mapping:', mappingError);
             }
             
-            // STEP 2: If bill_mappings didn't work, try parsing billExternalReferenceNo as fallback
+            // STEP 2: If bill_mappings didn't work, try getting billExternalReferenceNo from callback or bill_mappings
             if (!driverId || !amount) {
-                console.warn('⚠️ bill_mappings didn\'t have complete data, trying billExternalReferenceNo...');
-                billExternalReferenceNo = req.body.billExternalReferenceNo || req.query.billExternalReferenceNo || req.body.BillExternalReferenceNo || req.query.BillExternalReferenceNo;
-            
-            if (billExternalReferenceNo) {
-                try {
+                console.warn('⚠️ bill_mappings didn\'t have complete data, trying billExternalReferenceNo as fallback...');
+                
+                // Try to get billExternalReferenceNo from callback first
+                billExternalReferenceNo = req.body.billExternalReferenceNo || req.query.billExternalReferenceNo || 
+                                        req.body.BillExternalReferenceNo || req.query.BillExternalReferenceNo ||
+                                        billExternalReferenceNo; // From bill_mappings if it had it
+                
+                // If still don't have it, try to get from bill_mappings again (in case it's there but driverId/amount are null)
+                if (!billExternalReferenceNo) {
+                    try {
+                        const mappingUrl = `${FIREBASE_DATABASE_URL}/bill_mappings/${billCode}.json`;
+                        const mappingResponse = await fetch(mappingUrl);
+                        if (mappingResponse.ok) {
+                            const mapping = await mappingResponse.json();
+                            billExternalReferenceNo = mapping?.billExternalReferenceNo || mapping?.bill_external_reference_no;
+                        }
+                    } catch (e) {
+                        console.warn('Could not get billExternalReferenceNo from mapping:', e.message);
+                    }
+                }
+                
+                if (billExternalReferenceNo) {
+                    try {
+                        console.log('🔍 Parsing billExternalReferenceNo:', billExternalReferenceNo);
                         // Parse the reference number format: reference_driverIdShort_amount_timestamp
-                    const parts = billExternalReferenceNo.split('_');
+                        const parts = billExternalReferenceNo.split('_');
+                        console.log('Reference parts:', parts);
+                        
                         if (parts.length >= 4) {
                             // New format: reference_driverIdShort_amount_timestamp
                             if (!reference) reference = parts[0];
-                            if (!amount) amount = parseFloat(parts[2]);
+                            if (!amount) {
+                                amount = parseFloat(parts[2]);
+                                console.log('✅ Parsed amount from reference:', amount);
+                            }
                             const driverIdShort = parts[1];
+                            console.log('Looking for driverId starting with:', driverIdShort);
                             
                             // Find full driverId from drivers table
-                            if (!driverId) {
+                            if (!driverId && driverIdShort) {
                                 const driversUrl = `${FIREBASE_DATABASE_URL}/drivers.json`;
                                 const driversResponse = await fetch(driversUrl);
                                 const drivers = await driversResponse.json();
@@ -729,13 +938,31 @@ app.post('/api/toyyibpay/callback', async (req, res) => {
                                     if (matchingDriverId) {
                                         driverId = matchingDriverId;
                                         console.log('✅ Found driverId from reference:', { driverIdShort, driverId, amount });
+                                    } else {
+                                        console.warn('⚠️ No driver found matching prefix:', driverIdShort);
+                                        // Try user_commissions path as fallback
+                                        const commissionsUrl = `${FIREBASE_DATABASE_URL}/driver_commissions.json`;
+                                        const commissionsResponse = await fetch(commissionsUrl);
+                                        const commissions = await commissionsResponse.json();
+                                        if (commissions) {
+                                            const matchingId = Object.keys(commissions).find(id => id.startsWith(driverIdShort));
+                                            if (matchingId) {
+                                                driverId = matchingId;
+                                                console.log('✅ Found driverId from driver_commissions:', driverId);
+                                            }
+                                        }
                                     }
                                 }
                             }
+                        } else {
+                            console.warn('⚠️ billExternalReferenceNo format unexpected:', billExternalReferenceNo, 'parts:', parts.length);
+                        }
+                    } catch (e) {
+                        console.error('❌ Failed to parse reference number:', e);
+                        console.error('Error stack:', e.stack);
                     }
-                } catch (e) {
-                    console.error('Failed to parse reference number:', e);
-                }
+                } else {
+                    console.warn('⚠️ No billExternalReferenceNo found in callback or bill_mappings');
                 }
             }
             
