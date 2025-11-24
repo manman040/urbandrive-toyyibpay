@@ -132,7 +132,15 @@ const TOYYIBPAY_BASE_URL = IS_SANDBOX
 const TOYYIBPAY_API_URL = `${TOYYIBPAY_BASE_URL}/index.php/api/createBill`;
 
 // Log credentials on startup
-console.log('ToyyibPay Configuration:');
+console.log('\n=== ToyyibPay Configuration ===');
+const envVarSet = process.env.TOYYIBPAY_ENV !== undefined && process.env.TOYYIBPAY_ENV.trim() !== '';
+if (!envVarSet) {
+    console.warn('⚠️  TOYYIBPAY_ENV environment variable is NOT SET');
+    console.warn('⚠️  Using default: production');
+    console.warn('💡 To use sandbox, set TOYYIBPAY_ENV=sandbox in Render.com → Environment');
+} else {
+    console.log('✅ TOYYIBPAY_ENV is set:', process.env.TOYYIBPAY_ENV);
+}
 console.log('Raw TOYYIBPAY_ENV value:', process.env.TOYYIBPAY_ENV || '(not set, using default: production)');
 console.log('Normalized TOYYIBPAY_ENV:', TOYYIBPAY_ENV_RAW);
 console.log('Environment:', TOYYIBPAY_ENV.toUpperCase());
@@ -142,6 +150,7 @@ console.log('Has Secret Key:', !!TOYYIBPAY_USER_SECRET_KEY);
 console.log('Has Category Code:', !!TOYYIBPAY_CATEGORY_CODE);
 console.log('Secret Key Preview:', TOYYIBPAY_USER_SECRET_KEY ? `${TOYYIBPAY_USER_SECRET_KEY.substring(0, 8)}...` : 'MISSING');
 console.log('Category Code:', TOYYIBPAY_CATEGORY_CODE || 'MISSING');
+console.log('================================\n');
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
@@ -677,28 +686,47 @@ app.post('/api/toyyibpay/create-bill', async (req, res) => {
             console.log('Bill created successfully:', { billCode, paymentUrl });
             
             // Store billCode mapping for callback retrieval
-            await storeBillCodeMapping(billCode, driverId, amount, reference, billData.billExternalReferenceNo);
+            console.log('📝 Attempting to store billCode mapping to Firebase...');
+            const mappingStored = await storeBillCodeMapping(billCode, driverId, amount, reference, billData.billExternalReferenceNo);
+            
+            if (!mappingStored) {
+                console.error('⚠️⚠️⚠️ WARNING: Failed to store billCode mapping to Firebase!');
+                console.error('⚠️ Payment bill created but mapping not stored. Callback may fail to find driverId/amount.');
+                // Continue anyway - we'll try to get data from billExternalReferenceNo in callback
+            } else {
+                console.log('✅ BillCode mapping stored successfully. Ready for callback.');
+            }
             
             res.json({
                 success: true,
                 billCode: billCode,
                 paymentUrl: paymentUrl,
                 qrCodeUrl: `${paymentUrl}/qr`, // Try QR code endpoint
-                message: 'Bill created successfully'
+                message: 'Bill created successfully',
+                mappingStored: mappingStored
             });
         } else if (result && result.billCode) {
             // Alternative format: {"billCode":"rp0fcxj8"}
             const paymentUrl = `${TOYYIBPAY_BASE_URL}/${result.billCode}`;
             
             // Store billCode mapping for callback retrieval
-            await storeBillCodeMapping(result.billCode, driverId, amount, reference, billData.billExternalReferenceNo);
+            console.log('📝 Attempting to store billCode mapping to Firebase (alternative format)...');
+            const mappingStored = await storeBillCodeMapping(result.billCode, driverId, amount, reference, billData.billExternalReferenceNo);
+            
+            if (!mappingStored) {
+                console.error('⚠️⚠️⚠️ WARNING: Failed to store billCode mapping to Firebase!');
+                console.error('⚠️ Payment bill created but mapping not stored. Callback may fail to find driverId/amount.');
+            } else {
+                console.log('✅ BillCode mapping stored successfully. Ready for callback.');
+            }
             
             res.json({
                 success: true,
                 billCode: result.billCode,
                 paymentUrl: paymentUrl,
                 qrCodeUrl: `${paymentUrl}/qr`, // Try QR code endpoint
-                message: 'Bill created successfully'
+                message: 'Bill created successfully',
+                mappingStored: mappingStored
             });
         } else if (result && result.error) {
             // ToyyibPay returned an error
@@ -783,38 +811,52 @@ async function storeBillCodeMapping(billCode, driverId, amount, reference, billE
         const responseText = await response.text();
         
         if (response.ok) {
-            console.log('✅ BillCode mapping stored successfully:', { 
+            console.log('✅ BillCode mapping stored successfully in bill_mappings:', { 
                 billCode, 
                 driverId: mappingData.driverId, 
                 amount: mappingData.amount,
-                responseStatus: response.status
+                responseStatus: response.status,
+                firebasePath: `/bill_mappings/${billCode}`
             });
+            console.log('📊 Stored data:', JSON.stringify(mappingData, null, 2));
             
             // Verify the data was stored correctly by reading it back
             setTimeout(async () => {
                 try {
-                    const verifyResponse = await fetch(mappingUrl);
+                    const verifyUrl = getFirebaseUrlWithAuth(`/bill_mappings/${billCode}`);
+                    const verifyResponse = await fetch(verifyUrl);
                     if (verifyResponse.ok) {
                         const verifyData = await verifyResponse.json();
-                        console.log('✅ Verification - Stored mapping data:', verifyData);
+                        console.log('✅ Verification - Stored mapping data in Firebase:', verifyData);
                         if (!verifyData.driverId || !verifyData.amount) {
                             console.error('❌❌❌ VERIFICATION FAILED: Stored data is missing driverId or amount!', verifyData);
+                        } else {
+                            console.log('✅✅✅ VERIFICATION SUCCESS: Data correctly stored in bill_mappings');
                         }
+                    } else {
+                        console.error('❌ Verification fetch failed:', verifyResponse.status, await verifyResponse.text());
                     }
                 } catch (verifyError) {
-                    console.warn('⚠️ Could not verify stored mapping:', verifyError.message);
+                    console.error('❌ Verification error:', verifyError);
                 }
-            }, 500);
+            }, 1000);
             
             return true;
         } else {
-            console.error('❌ Failed to store billCode mapping:', {
-                status: response.status,
-                statusText: response.statusText,
-                response: responseText,
-                billCode: billCode,
-                url: mappingUrl
-            });
+            console.error('❌❌❌ FAILED TO STORE BILLCODE MAPPING ❌❌❌');
+            console.error('Status:', response.status, response.statusText);
+            console.error('Response:', responseText);
+            console.error('BillCode:', billCode);
+            console.error('URL:', mappingUrl);
+            console.error('Data attempted to store:', JSON.stringify(mappingData, null, 2));
+            
+            // Check if it's an auth error
+            if (response.status === 401) {
+                console.error('🔒 AUTHENTICATION ERROR: Firebase rejected the request');
+                console.error('💡 Check if FIREBASE_DATABASE_SECRET is set correctly in Render.com');
+                console.error('💡 Verify Firebase Security Rules allow writes to bill_mappings');
+            }
+            
             return false;
         }
     } catch (error) {
@@ -1255,19 +1297,29 @@ async function updateFirebaseCommission(driverId, amount, billCode, reference) {
                 // Verify the update by fetching again
                 setTimeout(async () => {
                     try {
-                        const verifyResponse = await fetch(firebaseUrl);
+                        const verifyUrl = getFirebaseUrlWithAuth(`/driver_commissions/${driverId}/commission_summary`);
+                        const verifyResponse = await fetch(verifyUrl);
                         if (verifyResponse.ok) {
                             const verifyData = await verifyResponse.json();
-                            console.log('✅ Verification - Updated commission data:', {
-                                unpaid_commission: verifyData.unpaid_commission,
-                                paid_commission: verifyData.paid_commission,
-                                total_commission: verifyData.total_commission
-                            });
+                            console.log('✅✅✅ VERIFICATION - Updated commission data in driver_commissions:');
+                            console.log('   unpaid_commission:', verifyData.unpaid_commission);
+                            console.log('   paid_commission:', verifyData.paid_commission);
+                            console.log('   total_commission:', verifyData.total_commission);
+                            console.log('✅ Commission successfully updated in Firebase');
+                        } else {
+                            console.error('❌ Verification fetch failed:', verifyResponse.status);
+                            // Try alternative path
+                            const altVerifyUrl = getFirebaseUrlWithAuth(`/commissions/${driverId}`);
+                            const altVerifyResponse = await fetch(altVerifyUrl);
+                            if (altVerifyResponse.ok) {
+                                const altVerifyData = await altVerifyResponse.json();
+                                console.log('✅ Verification (alternative path) - Updated commission data:', altVerifyData);
+                            }
                         }
                     } catch (verifyError) {
-                        console.warn('⚠️ Could not verify commission update:', verifyError.message);
+                        console.error('❌ Verification error:', verifyError);
                     }
-                }, 1000);
+                }, 1500);
                 
                 // Payment record should already be saved in callback before this function
                 // This function only updates commission, payment record is saved separately
