@@ -1382,12 +1382,8 @@ async function addPaymentRecord(driverId, amount, billCode, reference, invoiceNo
         
         // Save to commission_payment node (singular as per user's Firebase structure)
         // Use commission_payment/{driverId} to store all payment transactions
-        let paymentUrl = `${FIREBASE_DATABASE_URL}/commission_payment/${driverId}.json`;
-        
-        // Firebase REST API requires .json suffix - ensure it's there
-        if (!paymentUrl.endsWith('.json')) {
-            paymentUrl += '.json';
-        }
+        // IMPORTANT: Use getFirebaseUrlWithAuth to include authentication token
+        const paymentUrl = getFirebaseUrlWithAuth(`/commission_payment/${driverId}`);
         
         console.log('📤 POSTing payment record to:', paymentUrl);
         console.log('📋 Payment data:', JSON.stringify(paymentData, null, 2));
