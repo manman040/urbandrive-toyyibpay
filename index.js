@@ -2676,7 +2676,7 @@ app.get('/api/toyyibpay/success', async (req, res) => {
                 console.log('Attempting to return to app:', packageName);
                 
                 // Method 1: Use Android Intent URL (most reliable)
-                const intentUrl = 'intent://toyyib/return#Intent;scheme=yourapp;package=' + packageName + ';end';
+                const intentUrl = 'intent://toyyib/return#Intent;scheme=perdaride;package=' + packageName + ';end';
                 
                 // Try Intent URL first
                 try {
@@ -2689,8 +2689,8 @@ app.get('/api/toyyibpay/success', async (req, res) => {
                 // Method 2: Try direct deep link after short delay
                 setTimeout(() => {
                     try {
-                        console.log('Trying deep link: yourapp://toyyib/return');
-                window.location.href = 'yourapp://toyyib/return';
+                        console.log('Trying deep link: perdaride://toyyib/return');
+                window.location.href = 'perdaride://toyyib/return';
                     } catch (e) {
                         console.error('Deep link failed:', e);
                     }
@@ -2708,7 +2708,7 @@ app.get('/api/toyyibpay/success', async (req, res) => {
                         } else {
                             // Last resort: try deep link again
                             console.log('Final fallback: trying deep link again');
-                            window.location.href = 'yourapp://toyyib/return';
+                            window.location.href = 'perdaride://toyyib/return';
                             
                             // If still not working, show message
                             setTimeout(() => {
